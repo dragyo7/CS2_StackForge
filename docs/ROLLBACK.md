@@ -1,5 +1,8 @@
 # Rollback and Release Safety
 
+- Schema migrations in `backend/app/migrations.py` are additive (`CREATE TABLE IF NOT EXISTS` and `ALTER TABLE ... ADD COLUMN` only) so rollback to an earlier build preserves existing rows without data loss.
+- Provider adapters (`steam`, `faceit`, `leetify`, `cswatch`) can be isolated or disabled independently without blocking match-room balancing.
+
 ## General release rules
 - Ship behind feature flags where practical.
 - Deploy backward-compatible schema changes first.

@@ -2,6 +2,21 @@
 
 This is the source-of-truth inventory for third-party data, software and services. Update this file whenever an integration is added, removed or its terms/access change.
 
+## Integration Source Registry
+
+| Provider | Classification | Official URL | API access | Key required | Available fields | Refresh policy | Attribution | Implementation status |
+|---|---|---|---|---|---|---|---|---|
+| **Google Sheets (CSV Export)** | Official (Read-only public link) | https://docs.google.com/spreadsheets/ | Public CSV export (`/export?format=csv`) | No (if link-readable) | Community spreadsheet columns (`Name`, `Url`, `IGN`, optional rating/role) | Manual Preview / Sync Now | Source URL stored in `spreadsheet_imports` | **Implemented & Live-Tested** |
+| **Steam Web API** | Official | https://partner.steamgames.com/doc/webapi/ISteamUser | REST (`GetPlayerSummaries`, `GetPlayerBans`, `ResolveVanityURL`) | Yes (`STEAM_API_KEY`) | Persona name, avatar, visibility, VAC/game/community/economy ban counts | Manual/TTL cached (900s default) | Link to `steamcommunity.com/profiles/{id}` | **Implemented** (`NOT_CONFIGURED` fallback tested; live calls untested pending key) |
+| **Leetify Public CS API** | Third-party | https://api-public-docs.cs-prod.leetify.com/ | REST `/v3/profile`, `/v3/profile/matches` | Optional (`LEETIFY_API_KEY`) | Leetify rating, Premier rank, FACEIT ELO, winrate, matches, ADR (`dpr`), K/D, HS%, opening duels, utility, flashes, map ranks | Manual/TTL cached (900s default), keyless rate-limit safe | Link to `leetify.com/app/profile/{id}`; no affiliation implied | **Implemented & Live-Tested** (keyless) |
+| **FACEIT Data API v4** | Official (Third-party platform) | https://docs.faceit.com/docs/data-api/ | REST `/players`, `/players/{id}/stats/cs2` | Yes (`FACEIT_API_KEY`) | FACEIT ID, nickname, ELO, skill level, CS2 lifetime matches/win%/KD/HS%/ADR | Manual/TTL cached | Link to `faceit.com` profile | **Implemented** (`NOT_CONFIGURED` fallback tested; live calls untested pending key) |
+| **CSWatch Public JSON API** | Third-party | https://cswatch.gg/ | REST `/api/public/player/{steamId}` | No (fair use <= 30 req/min/IP) | Persona name, avatar, reputation score, risk level, ban summary, breakdown, factors | On-demand Trust Check / Refresh (25/min limiter) | Required link to `cswatch.gg/player/{id}`; not Valve verdict | **Implemented & Live-Tested** |
+| **CSStats.gg** | Unsupported API (Link-only) | https://csstats.gg/ | No documented public API (Cloudflare-gated) | N/A | Canonical `SteamID64` extracted from `/player/{steamid64}` URL; manual/CSV import only | N/A (no scraping) | Direct profile link only | **URL extraction & link only** (no scraping) |
+| **CS2SUS / Cheatscanner / CS2Track** | Reference-only | See below | None confirmed | N/A | Methodology reference only | N/A | N/A | **Reference only** |
+
+## Read-Only Anti-Cheat Safety Model
+StackForge never injects into CS2, reads/writes game memory, modifies game files, simulates player input, automates Valve matchmaking queues, or scrapes Cloudflare-gated websites. All integrations are strictly read-only external HTTP requests or offline spreadsheet/demo inputs.
+
 ## Status definitions
 - **Core planned:** expected in product, not necessarily implemented.
 - **Candidate:** evaluate license, maintenance, API and compatibility before adoption.

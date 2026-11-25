@@ -7,6 +7,11 @@ from urllib.parse import urlparse
 STEAM_ID64_RE = re.compile(r"^7656119\d{10}$")
 STEAM_PROFILE_PATH_RE = re.compile(r"^/profiles/(7656119\d{10})(?:/.*)?$", re.IGNORECASE)
 STEAM_VANITY_PATH_RE = re.compile(r"^/id/([A-Za-z0-9_-]{2,64})(?:/.*)?$", re.IGNORECASE)
+CSSTATS_PATH_RE = re.compile(r"^/player/(7656119\d{10})(?:/.*)?$", re.IGNORECASE)
+LEETIFY_SID_PATH_RE = re.compile(r"^/(?:app/)?profile/(7656119\d{10})(?:/.*)?$", re.IGNORECASE)
+LEETIFY_UUID_PATH_RE = re.compile(r"^/(?:app/)?profile/([0-9a-f-]{36})(?:/.*)?$", re.IGNORECASE)
+FACEIT_PATH_RE = re.compile(r"^/(?:[a-z]{2}/)?players/([A-Za-z0-9_-]{2,64})(?:/.*)?$", re.IGNORECASE)
+CSWATCH_PATH_RE = re.compile(r"^/player/(7656119\d{10})(?:/.*)?$", re.IGNORECASE)
 
 VALID_ROLES = ("Entry", "Rifler", "AWPer", "Support", "Lurker", "IGL")
 
@@ -21,7 +26,21 @@ class ParsedImportLine:
     display_name: str | None = None
     manual_rating: float | None = None
     primary_role: str | None = None
+    source_provider: str | None = None
+    source_profile_url: str | None = None
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class UniversalIdentifier:
+    raw: str
+    identifier_type: str  # steam_id64 | steam_profile_url | steam_vanity_url | csstats_url | leetify_url | faceit_url | cswatch_url | nickname | invalid
+    normalized_value: str
+    steam_id64: str | None = None
+    vanity_name: str | None = None
+    faceit_nickname: str | None = None
+    leetify_uuid: str | None = None
+    profile_url: str | None = None
 
 
 def is_valid_steam_id64(value: str | None) -> bool:
@@ -32,7 +51,8 @@ def is_valid_steam_id64(value: str | None) -> bool:
 
 def normalize_steam_url_or_id(raw_value: str) -> tuple[str | None, str | None, str | None]:
     """
-    Returns (steam_id64, canonical_profile_url, vanity_name).
+    Normalizes SteamID64, Steam /profiles/, Steam /id/, CSStats /player/{sid64},
+    Leetify /profile/{sid64}, and CSWatch /player/{sid64}.
     Never invents a SteamID64 from a vanity or display name.
     """
     text = raw_value.strip()
@@ -43,25 +63,146 @@ def normalize_steam_url_or_id(raw_value: str) -> tuple[str | None, str | None, s
         return text, f"https://steamcommunity.com/profiles/{text}", None
 
     candidate_url = text
-    if candidate_url.startswith("steamcommunity.com/"):
+    if any(
+        candidate_url.lower().startswith(dom)
+        for dom in ("steamcommunity.com/", "csstats.gg/", "leetify.com/", "cswatch.gg/", "www.faceit.com/")
+    ):
         candidate_url = f"https://{candidate_url}"
 
     if "://" in candidate_url:
         parsed = urlparse(candidate_url)
         host = (parsed.netloc or "").lower()
-        if host not in {"steamcommunity.com", "www.steamcommunity.com"}:
-            return None, None, None
-        m_prof = STEAM_PROFILE_PATH_RE.match(parsed.path)
-        if m_prof:
-            sid = m_prof.group(1)
-            return sid, f"https://steamcommunity.com/profiles/{sid}", None
-        m_van = STEAM_VANITY_PATH_RE.match(parsed.path)
-        if m_van:
-            vanity = m_van.group(1)
-            return None, f"https://steamcommunity.com/id/{vanity}", vanity
+        if host in {"steamcommunity.com", "www.steamcommunity.com"}:
+            m_prof = STEAM_PROFILE_PATH_RE.match(parsed.path)
+            if m_prof:
+                sid = m_prof.group(1)
+                return sid, f"https://steamcommunity.com/profiles/{sid}", None
+            m_van = STEAM_VANITY_PATH_RE.match(parsed.path)
+            if m_van:
+                vanity = m_van.group(1)
+                return None, f"https://steamcommunity.com/id/{vanity}", vanity
+        elif host in {"csstats.gg", "www.csstats.gg"}:
+            m_cs = CSSTATS_PATH_RE.match(parsed.path)
+            if m_cs:
+                sid = m_cs.group(1)
+                return sid, f"https://steamcommunity.com/profiles/{sid}", None
+        elif host in {"leetify.com", "www.leetify.com"}:
+            m_lt = LEETIFY_SID_PATH_RE.match(parsed.path)
+            if m_lt:
+                sid = m_lt.group(1)
+                return sid, f"https://steamcommunity.com/profiles/{sid}", None
+        elif host in {"cswatch.gg", "www.cswatch.gg"}:
+            m_cw = CSWATCH_PATH_RE.match(parsed.path)
+            if m_cw:
+                sid = m_cw.group(1)
+                return sid, f"https://steamcommunity.com/profiles/{sid}", None
         return None, None, None
 
     return None, None, None
+
+
+def detect_universal_identifier(raw_input: str) -> UniversalIdentifier:
+    text = raw_input.strip()
+    if not text:
+        return UniversalIdentifier(raw=raw_input, identifier_type="invalid", normalized_value="")
+
+    if is_valid_steam_id64(text):
+        return UniversalIdentifier(
+            raw=raw_input,
+            identifier_type="steam_id64",
+            normalized_value=text,
+            steam_id64=text,
+            profile_url=f"https://steamcommunity.com/profiles/{text}",
+        )
+
+    candidate_url = text
+    if any(
+        candidate_url.lower().startswith(dom)
+        for dom in ("steamcommunity.com/", "csstats.gg/", "leetify.com/", "cswatch.gg/", "faceit.com/", "www.faceit.com/")
+    ):
+        candidate_url = f"https://{candidate_url}"
+
+    if "://" in candidate_url:
+        parsed = urlparse(candidate_url)
+        host = (parsed.netloc or "").lower()
+        if host in {"steamcommunity.com", "www.steamcommunity.com"}:
+            m_prof = STEAM_PROFILE_PATH_RE.match(parsed.path)
+            if m_prof:
+                sid = m_prof.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="steam_profile_url",
+                    normalized_value=sid,
+                    steam_id64=sid,
+                    profile_url=f"https://steamcommunity.com/profiles/{sid}",
+                )
+            m_van = STEAM_VANITY_PATH_RE.match(parsed.path)
+            if m_van:
+                van = m_van.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="steam_vanity_url",
+                    normalized_value=van,
+                    vanity_name=van,
+                    profile_url=f"https://steamcommunity.com/id/{van}",
+                )
+        elif host in {"csstats.gg", "www.csstats.gg"}:
+            m_cs = CSSTATS_PATH_RE.match(parsed.path)
+            if m_cs:
+                sid = m_cs.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="csstats_url",
+                    normalized_value=sid,
+                    steam_id64=sid,
+                    profile_url=f"https://csstats.gg/player/{sid}",
+                )
+        elif host in {"leetify.com", "www.leetify.com"}:
+            m_lt = LEETIFY_SID_PATH_RE.match(parsed.path)
+            if m_lt:
+                sid = m_lt.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="leetify_url",
+                    normalized_value=sid,
+                    steam_id64=sid,
+                    profile_url=f"https://leetify.com/app/profile/{sid}",
+                )
+            m_uuid = LEETIFY_UUID_PATH_RE.match(parsed.path)
+            if m_uuid:
+                uid = m_uuid.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="leetify_url",
+                    normalized_value=uid,
+                    leetify_uuid=uid,
+                    profile_url=f"https://leetify.com/app/profile/{uid}",
+                )
+        elif host in {"cswatch.gg", "www.cswatch.gg"}:
+            m_cw = CSWATCH_PATH_RE.match(parsed.path)
+            if m_cw:
+                sid = m_cw.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="cswatch_url",
+                    normalized_value=sid,
+                    steam_id64=sid,
+                    profile_url=f"https://cswatch.gg/player/{sid}",
+                )
+        elif host in {"faceit.com", "www.faceit.com"}:
+            m_fc = FACEIT_PATH_RE.match(parsed.path)
+            if m_fc:
+                nick = m_fc.group(1)
+                return UniversalIdentifier(
+                    raw=raw_input,
+                    identifier_type="faceit_url",
+                    normalized_value=nick,
+                    faceit_nickname=nick,
+                    profile_url=f"https://www.faceit.com/en/players/{nick}",
+                )
+        return UniversalIdentifier(raw=raw_input, identifier_type="invalid", normalized_value=text)
+
+    return UniversalIdentifier(raw=raw_input, identifier_type="nickname", normalized_value=text)
 
 
 def _normalize_role(token: str | None) -> str | None:
@@ -76,25 +217,13 @@ def _normalize_role(token: str | None) -> str | None:
 
 
 def parse_import_line(raw_line: str) -> ParsedImportLine:
-    """
-    Parses a single bulk-import line.
-    Supports:
-    - SteamID64: 76561198000000000
-    - Steam profile URL: https://steamcommunity.com/profiles/76561198000000000
-    - Steam vanity URL: https://steamcommunity.com/id/customname
-    - Display name: Nickname
-    - Delimited convenience: Nickname | SteamID64/URL | Rating | Role
-    """
     raw = raw_line.strip()
     if not raw:
         return ParsedImportLine(raw=raw_line, kind="INVALID", error="Empty line")
 
-    # Check if delimited by '|' or ',' (but not inside URL)
     parts: list[str] | None = None
     if "|" in raw:
         parts = [p.strip() for p in raw.split("|")]
-    elif "," in raw and "steamcommunity.com" not in raw.lower():
-        parts = [p.strip() for p in raw.split(",")]
     elif "," in raw:
         parts = [p.strip() for p in raw.split(",")]
 
@@ -105,15 +234,23 @@ def parse_import_line(raw_line: str) -> ParsedImportLine:
         vanity: str | None = None
         rating: float | None = None
         role: str | None = None
+        src_prov: str | None = None
+        src_url: str | None = None
 
         for part in parts:
             if not part:
                 continue
-            sid, url, van = normalize_steam_url_or_id(part)
-            if sid or van:
-                steam_id64 = sid or steam_id64
-                steam_url = url or steam_url
-                vanity = van or vanity
+            det = detect_universal_identifier(part)
+            if det.steam_id64:
+                steam_id64 = det.steam_id64
+                steam_url = f"https://steamcommunity.com/profiles/{det.steam_id64}"
+                if det.identifier_type in ("csstats_url", "leetify_url", "cswatch_url"):
+                    src_prov = det.identifier_type.replace("_url", "")
+                    src_url = det.profile_url
+                continue
+            if det.vanity_name:
+                vanity = det.vanity_name
+                steam_url = det.profile_url
                 continue
             r = _normalize_role(part)
             if r:
@@ -138,6 +275,8 @@ def parse_import_line(raw_line: str) -> ParsedImportLine:
                 display_name=name_part,
                 manual_rating=rating,
                 primary_role=role,
+                source_provider=src_prov,
+                source_profile_url=src_url,
             )
         if vanity:
             return ParsedImportLine(
@@ -159,17 +298,30 @@ def parse_import_line(raw_line: str) -> ParsedImportLine:
             )
         return ParsedImportLine(raw=raw, kind="INVALID", error="Could not parse entry")
 
-    sid, url, van = normalize_steam_url_or_id(raw)
-    if sid:
-        return ParsedImportLine(raw=raw, kind="STEAM_ID64", steam_id64=sid, steam_profile_url=url)
-    if van:
-        return ParsedImportLine(raw=raw, kind="STEAM_VANITY", steam_profile_url=url, vanity_name=van)
+    det = detect_universal_identifier(raw)
+    if det.steam_id64:
+        src_prov = det.identifier_type.replace("_url", "") if det.identifier_type in ("csstats_url", "leetify_url", "cswatch_url") else None
+        return ParsedImportLine(
+            raw=raw,
+            kind="STEAM_ID64",
+            steam_id64=det.steam_id64,
+            steam_profile_url=f"https://steamcommunity.com/profiles/{det.steam_id64}",
+            source_provider=src_prov,
+            source_profile_url=det.profile_url if src_prov else None,
+        )
+    if det.vanity_name:
+        return ParsedImportLine(
+            raw=raw,
+            kind="STEAM_VANITY",
+            steam_profile_url=det.profile_url,
+            vanity_name=det.vanity_name,
+        )
 
     if "://" in raw or raw.lower().startswith("http") or "/" in raw:
         return ParsedImportLine(
             raw=raw,
             kind="INVALID",
-            error="Unsupported URL format. Expected Steam /profiles/<17-digit-id> or /id/<vanity> URL.",
+            error="Unsupported URL format. Expected Steam /profiles/<17-digit-id>, /id/<vanity>, or CSStats/Leetify/CSWatch profile URL.",
         )
 
     if len(raw) > 100:

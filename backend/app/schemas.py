@@ -138,6 +138,40 @@ class PlayerUpdate(BaseModel):
     clear_primary_role: bool = False
 
 
+class ExternalIdentityOut(BaseModel):
+    id: str
+    provider: str
+    external_id: str
+    profile_url: str | None = None
+    verification_state: str
+    confidence: float
+
+
+class MatchRecordOut(BaseModel):
+    id: str
+    provider: str
+    external_match_id: str
+    map_name: str | None = None
+    game_mode: str | None = None
+    outcome: str | None = None
+    score_text: str | None = None
+    kd_ratio: float | None = None
+    adr: float | None = None
+    hs_pct: float | None = None
+    leetify_rating: float | None = None
+    source_url: str | None = None
+    played_at: datetime
+
+
+class TrustSummaryOut(BaseModel):
+    cswatch_status: str | None = None
+    cswatch_risk_level: str | None = None
+    cswatch_reputation_score: float | None = None
+    cswatch_summary: str | None = None
+    watchlist_status: str | None = None
+    watchlist_reason: str | None = None
+
+
 class PlayerOut(BaseModel):
     id: str
     player_id: str
@@ -166,13 +200,17 @@ class PlayerOut(BaseModel):
     secondary_role: str | None
     notes: str | None
     is_seeded: bool
+    is_archived: bool = False
+    stats_stale: bool = False
     normalized_strength: float
     confidence: float
     strength_band: str
     missing_sources: list[str]
     provider_statuses: list[ProviderStatusOut] = []
     aliases: list[AliasOut] = []
+    external_identities: list[ExternalIdentityOut] = []
     latest_stats: StatSnapshotOut | None = None
+    trust_summary: TrustSummaryOut | None = None
     card: PlayerCardOut | None = None
     created_at: datetime
     updated_at: datetime
@@ -182,6 +220,8 @@ class PlayerProfileOut(BaseModel):
     player: PlayerOut
     stat_snapshots: list[StatSnapshotOut]
     aliases: list[AliasOut]
+    external_identities: list[ExternalIdentityOut] = []
+    match_records: list[MatchRecordOut] = []
     provider_statuses: list[ProviderStatusOut]
     card: PlayerCardOut
 

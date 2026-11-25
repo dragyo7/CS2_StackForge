@@ -1,17 +1,31 @@
 import type {
+  AuthState,
   BulkImportResponse,
   HealthResponse,
   HumourIntensity,
+  ImportHistoryItem,
   MatchRoom,
   Player,
   PlayerCompare,
   PlayerProfile,
   RefreshProfileResponse,
+  ResolveIdentityResponse,
   RoleType,
+  SpreadsheetPreview,
   SwapPreview,
+  TrustOverview,
 } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+
+const TOKEN_KEY = 'stackforge_session_token';
+export function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+export function setStoredToken(token: string | null): void {
+  if (token) localStorage.setItem(TOKEN_KEY, token);
+  else localStorage.removeItem(TOKEN_KEY);
+}
 
 export class ApiError extends Error {
   status: number;
@@ -27,12 +41,16 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getStoredToken();
+  const isFormData = typeof FormData !== 'undefined' && init?.body instanceof FormData;
+  const headers: Record<string, string> = {
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...((init?.headers as Record<string, string>) || {}),
+  };
   const resp = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
     ...init,
+    headers,
   });
 
   if (resp.status === 204) {
@@ -69,8 +87,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthResponse>('/health'),
 
-  listPlayers: (q?: string) =>
-    request<Player[]>(q ? `/players?q=${encodeURIComponent(q)}` : '/players'),
+  listPlayers: (q?: string, includeArchived = false) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (includeArchived) params.set('include_archived', 'true');
+    const qs = params.toString();
+    return request<Player[]>(qs ? `/players?${qs}` : '/players');
+  },
+
+  archivePlayer: (id: string, archived = true) =>
+    request<Player>(`/players/${id}/archive?archived=${archived}`, { method: 'POST' }),
+
+  refreshAllPlayers: (force = false) =>
+    request<{ total: number; results: any[] }>(`/players/refresh-all?force=${force}`, {
+      method: 'POST',
+    }),
 
   createPlayer: (payload: {
     display_name: string;
@@ -275,4 +306,130 @@ export const api = {
 
   getSharedLineup: (slug: string) =>
     request<{ room_title: string; room_status: string; lineup: any }>(`/lineups/${slug}`),
+
+  // Auth
+  authMe: () => request<AuthState>('/auth/me'),
+  authSignup: (email: string, username: string, password: string) =>
+    request<{ token: string; user: AuthState['user'] }>('/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ email, username, password }),
+    }),
+  authLogin: (email: string, password: string) =>
+    request<{ token: string; user: AuthState['user'] }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  authLogout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+
+  // Identity Resolution
+  resolveIdentity: (query: string, discoverProviders = true) =>
+    request<ResolveIdentityResponse>('/identity/resolve', {
+      method: 'POST',
+      body: JSON.stringify({ query, discover_providers: discoverProviders }),
+    }),
+  confirmIdentity: (payload: {
+    community_player_id: string;
+    provider: string;
+    external_id: string;
+    profile_url?: string | null;
+    steam_id64?: string | null;
+  }) =>
+    request<any>('/identity/confirm', { method: 'POST', body: JSON.stringify(payload) }),
+
+  // Spreadsheet Import & Sync
+  previewGoogleSheet: (
+    url: string,
+    mappingOverride?: Record<string, string | null> | null,
+    defaultRating = 55,
+  ) =>
+    request<SpreadsheetPreview>('/imports/google-sheet/preview', {
+      method: 'POST',
+      body: JSON.stringify({
+        url,
+        mapping_override: mappingOverride || null,
+        default_rating: defaultRating,
+      }),
+    }),
+  commitGoogleSheet: (
+    url: string,
+    mappingOverride?: Record<string, string | null> | null,
+    overwriteManual = false,
+    defaultRating = 55,
+  ) =>
+    request<any>('/imports/google-sheet/commit', {
+      method: 'POST',
+      body: JSON.stringify({
+        url,
+        mapping_override: mappingOverride || null,
+        overwrite_manual: overwriteManual,
+        default_rating: defaultRating,
+      }),
+    }),
+  previewFileImport: (file: File, mappingJson?: string | null, defaultRating = 55) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (mappingJson) fd.append('mapping_json', mappingJson);
+    fd.append('default_rating', String(defaultRating));
+    return request<SpreadsheetPreview>('/imports/file/preview', { method: 'POST', body: fd });
+  },
+  commitFileImport: (
+    file: File,
+    mappingJson?: string | null,
+    overwriteManual = false,
+    defaultRating = 55,
+  ) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (mappingJson) fd.append('mapping_json', mappingJson);
+    fd.append('overwrite_manual', String(overwriteManual));
+    fd.append('default_rating', String(defaultRating));
+    return request<any>('/imports/file/commit', { method: 'POST', body: fd });
+  },
+  importHistory: () => request<ImportHistoryItem[]>('/imports/history'),
+  syncImport: (importId: string, overwriteManual = false) =>
+    request<any>(`/imports/${importId}/sync?overwrite_manual=${overwriteManual}`, {
+      method: 'POST',
+    }),
+
+  // Trust & Account Watch
+  trustOverview: () => request<TrustOverview>('/trust/overview'),
+  runTrustCheck: (playerId: string) =>
+    request<any[]>(`/trust/players/${playerId}/check`, { method: 'POST' }),
+  addWatchlist: (communityPlayerId: string, reason: string, sourceUrl?: string) =>
+    request<TrustOverview>('/trust/watchlist', {
+      method: 'POST',
+      body: JSON.stringify({
+        community_player_id: communityPlayerId,
+        reason,
+        source_url: sourceUrl || null,
+      }),
+    }),
+  reviewWatchlist: (
+    entryId: string,
+    status: 'WATCHING' | 'REVIEWED' | 'DISMISSED',
+    reviewNote?: string,
+  ) =>
+    request<TrustOverview>(`/trust/watchlist/${entryId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, review_note: reviewNote || null }),
+    }),
+  addTrustReport: (
+    communityPlayerId: string,
+    summary: string,
+    sourceUrl?: string,
+    category = 'COMMUNITY_REPORT',
+  ) =>
+    request<any>('/trust/reports', {
+      method: 'POST',
+      body: JSON.stringify({
+        community_player_id: communityPlayerId,
+        summary,
+        source_url: sourceUrl || null,
+        category,
+      }),
+    }),
+  refreshWatched: () =>
+    request<{ checked: number; overview: TrustOverview }>('/trust/refresh-watched', {
+      method: 'POST',
+    }),
 };

@@ -3,6 +3,7 @@ import {
   Activity,
   CheckCircle2,
   Edit3,
+  FileSpreadsheet,
   History,
   Plus,
   RefreshCw,
@@ -17,6 +18,7 @@ import {
 import { api, ApiError } from '../api';
 import type { BulkImportResponse, Player, RoleType } from '../types';
 import { ROLES } from '../types';
+import { CommunityImportPanel } from './CommunityImportPanel';
 import { PlayerAvatar } from './PlayerAvatar';
 
 interface Props {
@@ -33,9 +35,11 @@ export const PlayerRegistryView: React.FC<Props> = ({
   onError,
 }) => {
   const [search, setSearch] = useState('');
+  const [showImportPanel, setShowImportPanel] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [editing, setEditing] = useState<Player | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Add / Edit form fields
@@ -56,6 +60,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
   const openAdd = () => {
     setEditing(null);
+    setFormError(null);
     setDisplayName('');
     setSteamInput('');
     setManualRating('55');
@@ -69,6 +74,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
   const openEdit = (p: Player) => {
     setEditing(p);
+    setFormError(null);
     setDisplayName(p.display_name);
     setSteamInput(p.steam_id64 || p.steam_profile_url || '');
     setManualRating(String(p.manual_rating));
@@ -83,6 +89,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
   const handleSavePlayer = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
+    setFormError(null);
     try {
       const trimmedSteam = steamInput.trim();
       const isRawId = /^7656119\d{10}$/.test(trimmedSteam);
@@ -120,19 +127,52 @@ export const PlayerRegistryView: React.FC<Props> = ({
       setShowAddForm(false);
       await onRefresh();
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : 'Failed to save player.');
+      const msg = err instanceof ApiError ? err.message : 'Failed to save player.';
+      setFormError(msg);
+      onError(msg);
     } finally {
       setBusy(false);
     }
   };
 
   const handleDelete = async (p: Player) => {
+    if (!window.confirm(`Remove ${p.display_name} from this community? (Global Steam identity & match records are preserved.)`)) {
+      return;
+    }
     setBusy(true);
     try {
       await api.deletePlayer(p.id);
       await onRefresh();
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : 'Failed to delete player.');
+      onError(err instanceof ApiError ? err.message : 'Failed to remove player.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleArchive = async (p: Player) => {
+    const nextArchived = !p.is_archived;
+    if (nextArchived && !window.confirm(`Archive ${p.display_name}? They will be hidden from active match selection until unarchived.`)) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.archivePlayer(p.id, nextArchived);
+      await onRefresh();
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Failed to update archive status.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRefreshAll = async () => {
+    setBusy(true);
+    try {
+      await api.refreshAllPlayers(true);
+      await onRefresh();
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Batch refresh failed.');
     } finally {
       setBusy(false);
     }
@@ -189,6 +229,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
       p.display_name.toLowerCase().includes(q) ||
       (p.steam_id64 && p.steam_id64.includes(q)) ||
       (p.steam_persona_name && p.steam_persona_name.toLowerCase().includes(q)) ||
+      (p.vanity_name && p.vanity_name.toLowerCase().includes(q)) ||
       (p.primary_role && p.primary_role.toLowerCase().includes(q)) ||
       aliasMatch
     );
@@ -205,6 +246,16 @@ export const PlayerRegistryView: React.FC<Props> = ({
             </p>
           </div>
           <div className="row">
+            <button
+              className={`btn ${showImportPanel ? 'btn-primary' : ''}`}
+              onClick={() => setShowImportPanel(!showImportPanel)}
+              disabled={busy}
+            >
+              <FileSpreadsheet size={15} /> {showImportPanel ? 'Hide Sheet & Identity' : 'Sheet Import & Resolver'}
+            </button>
+            <button className="btn" onClick={handleRefreshAll} disabled={busy || players.length === 0}>
+              <RefreshCw size={15} /> Refresh All
+            </button>
             <button className="btn" onClick={handleSeedDemo} disabled={busy}>
               <Sparkles size={15} /> Load 10 Demo Players
             </button>
@@ -216,13 +267,24 @@ export const PlayerRegistryView: React.FC<Props> = ({
               }}
               disabled={busy}
             >
-              <Upload size={15} /> Bulk Import
+              <Upload size={15} /> Bulk Paste
             </button>
             <button className="btn btn-primary" onClick={openAdd} disabled={busy}>
               <Plus size={15} /> Add Player
             </button>
           </div>
         </div>
+
+        {showImportPanel && (
+          <div style={{ marginBottom: '1rem' }}>
+            <CommunityImportPanel
+              players={players}
+              onImported={onRefresh}
+              onError={onError}
+              onOpenProfile={onOpenProfile}
+            />
+          </div>
+        )}
 
         <div className="row" style={{ marginBottom: '0.85rem' }}>
           <div style={{ position: 'relative', flex: '1 1 280px' }}>
@@ -292,7 +354,14 @@ export const PlayerRegistryView: React.FC<Props> = ({
                       <button className="btn btn-xs" title="Edit player" onClick={() => openEdit(p)}>
                         <Edit3 size={12} />
                       </button>
-                      <button className="btn btn-xs btn-danger" title="Delete player" onClick={() => handleDelete(p)}>
+                      <button
+                        className="btn btn-xs"
+                        title={p.is_archived ? 'Unarchive player' : 'Archive player'}
+                        onClick={() => handleArchive(p)}
+                      >
+                        {p.is_archived ? 'Unarchive' : 'Archive'}
+                      </button>
+                      <button className="btn btn-xs btn-danger" title="Remove from community" onClick={() => handleDelete(p)}>
                         <Trash2 size={12} />
                       </button>
                     </div>
@@ -318,7 +387,9 @@ export const PlayerRegistryView: React.FC<Props> = ({
                       )}
                       {p.faceit_elo != null && <span className="badge">FACEIT {p.faceit_elo}</span>}
                       {p.leetify_rating != null && (
-                        <span className="badge">Leetify {p.leetify_rating >= 0 ? '+' : ''}{p.leetify_rating}</span>
+                        <span className="badge">
+                          Leetify {p.leetify_rating >= 0 ? '+' : ''}{p.leetify_rating.toFixed(2)}
+                        </span>
                       )}
                       {p.card && p.card.eligible_count > 0 && (
                         <span className="badge badge-a">{p.card.primary_title}</span>
@@ -346,6 +417,11 @@ export const PlayerRegistryView: React.FC<Props> = ({
                 Close
               </button>
             </div>
+            {formError && (
+              <div className="alert alert-danger" style={{ marginBottom: '0.75rem' }}>
+                <span className="small">{formError}</span>
+              </div>
+            )}
             <form onSubmit={handleSavePlayer} className="stack">
               <div className="form-grid">
                 <div>

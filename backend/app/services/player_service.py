@@ -9,15 +9,21 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
 from app.models import (
+    ActivityEvent,
     AuditEvent,
     Community,
     CommunityPlayer,
     Player,
     PlayerAlias,
+    PlayerExternalIdentity,
+    PlayerMatchRecord,
     PlayerStatSnapshot,
     ProviderSnapshot,
+    TrustSignal,
+    WatchlistEntry,
 )
 from app.optimizer.normalizer import PlayerInput, normalize_player
+from app.providers.cswatch import CSWatchProvider
 from app.providers.external import FaceitProvider, LeetifyProvider
 from app.providers.steam import SteamProvider
 from app.schemas import (
@@ -25,6 +31,8 @@ from app.schemas import (
     BulkImportEntryResult,
     BulkImportRequest,
     BulkImportResponse,
+    ExternalIdentityOut,
+    MatchRecordOut,
     PlayerCardOut,
     PlayerCardSettingsUpdate,
     PlayerCompareOut,
@@ -36,6 +44,7 @@ from app.schemas import (
     RefreshProfileResponse,
     StatSnapshotCreate,
     StatSnapshotOut,
+    TrustSummaryOut,
 )
 from app.services.humour_engine import CardMetricContext, generate_player_card
 from app.services.steam_parser import is_valid_steam_id64, normalize_steam_url_or_id, parse_import_line
@@ -138,7 +147,180 @@ def _stats_for_player(db: Session, player_id: str) -> list[StatSnapshotOut]:
         .where(PlayerStatSnapshot.player_id == player_id)
         .order_by(PlayerStatSnapshot.captured_at.desc())
     ).all()
-    return [_stat_to_out(st) for st in rows]
+    scope_rank = {"recent": 0, "season": 1, "lifetime": 2}
+    rows_sorted = sorted(
+        rows,
+        key=lambda st: (
+            -(_ensure_utc(st.captured_at) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
+            scope_rank.get(st.scope, 3),
+        ),
+    )
+    return [_stat_to_out(st) for st in rows_sorted]
+
+
+def select_effective_player_stats(db: Session, player_id: str) -> dict:
+    """
+    Explicitly selects recent and lifetime snapshots:
+    - Prefers `recent` for recent-form metrics (ADR, recent K/D, win rate, flash assists, sample size).
+    - Prefers `lifetime` for lifetime metrics (opening duels, trade kills, clutch %, consistency, utility).
+    Preserves None when missing; marks stale when age >= 14 days or freshness == 'STALE'.
+    """
+    rows = db.scalars(
+        select(PlayerStatSnapshot)
+        .where(PlayerStatSnapshot.player_id == player_id)
+        .order_by(PlayerStatSnapshot.captured_at.desc())
+    ).all()
+    recent_snap = next((r for r in rows if r.scope == "recent" and r.freshness != "STALE"), None) or next(
+        (r for r in rows if r.scope == "recent"), None
+    )
+    lifetime_snap = next((r for r in rows if r.scope == "lifetime" and r.freshness != "STALE"), None) or next(
+        (r for r in rows if r.scope == "lifetime"), None
+    )
+    fallback_snap = rows[0] if rows else None
+
+    primary = recent_snap or lifetime_snap or fallback_snap
+    lifetime_or_fb = lifetime_snap or fallback_snap
+    recent_or_fb = recent_snap or lifetime_snap or fallback_snap
+
+    def _pick(attr: str, prefer_recent: bool):
+        order = (recent_snap, lifetime_snap, fallback_snap) if prefer_recent else (lifetime_snap, recent_snap, fallback_snap)
+        for snap in order:
+            if snap is not None:
+                val = getattr(snap, attr, None)
+                if val is not None:
+                    return val
+        return None
+
+    now = datetime.now(timezone.utc)
+    stats_stale = False
+    if primary and not primary.is_sample_demo:
+        cap = _ensure_utc(primary.captured_at)
+        if primary.freshness == "STALE" or (cap is not None and (now - cap).days >= 14):
+            stats_stale = True
+
+    sample_src = recent_snap or lifetime_snap or fallback_snap
+    sample_size = (sample_src.sample_size or sample_src.matches_played or 0) if sample_src else 0
+
+    return {
+        "recent_snapshot": recent_snap,
+        "lifetime_snapshot": lifetime_snap,
+        "primary_snapshot": primary,
+        "adr": _pick("adr", prefer_recent=True),
+        "kd_ratio": _pick("kd_ratio", prefer_recent=True),
+        "kast": _pick("kast", prefer_recent=True),
+        "win_rate": _pick("win_rate", prefer_recent=True),
+        "flash_assists_per_round": _pick("flash_assists_per_round", prefer_recent=True),
+        "opening_duel_pct": _pick("opening_duel_pct", prefer_recent=False),
+        "trade_kills_per_match": _pick("trade_kills_per_match", prefer_recent=False),
+        "utility_damage_per_round": _pick("utility_damage_per_round", prefer_recent=False),
+        "clutch_win_pct": _pick("clutch_win_pct", prefer_recent=False),
+        "consistency_score": _pick("consistency_score", prefer_recent=False),
+        "stats_sample_size": sample_size,
+        "stats_stale": stats_stale,
+        "has_recent_or_lifetime": (recent_or_fb is not None or lifetime_or_fb is not None),
+    }
+
+
+def build_player_input(db: Session, cp: CommunityPlayer) -> tuple[PlayerInput, dict]:
+    """Shared normalized PlayerInput builder used identically by Registry and Optimizer."""
+    p = cp.player
+    map_ratings: dict[str, float] = {}
+    if cp.map_ratings_json:
+        try:
+            map_ratings = json.loads(cp.map_ratings_json)
+        except json.JSONDecodeError:
+            map_ratings = {}
+    eff = select_effective_player_stats(db, p.id)
+    pin = PlayerInput(
+        community_player_id=cp.id,
+        display_name=cp.display_name,
+        steam_id64=p.steam_id64,
+        identity_status=p.identity_status,
+        manual_rating=cp.manual_rating,
+        premier_rating=cp.premier_rating,
+        premier_source=cp.premier_source,
+        premier_season=cp.premier_season,
+        faceit_elo=cp.faceit_elo,
+        leetify_rating=cp.leetify_rating,
+        recent_form=cp.recent_form,
+        primary_role=cp.primary_role,
+        secondary_role=cp.secondary_role,
+        map_ratings=map_ratings,
+        adr=eff["adr"],
+        kd_ratio=eff["kd_ratio"],
+        kast=eff["kast"],
+        opening_duel_pct=eff["opening_duel_pct"],
+        trade_kills_per_match=eff["trade_kills_per_match"],
+        utility_damage_per_round=eff["utility_damage_per_round"],
+        flash_assists_per_round=eff["flash_assists_per_round"],
+        clutch_win_pct=eff["clutch_win_pct"],
+        consistency_score=eff["consistency_score"],
+        win_rate=eff["win_rate"],
+        stats_sample_size=eff["stats_sample_size"],
+        stats_stale=eff["stats_stale"],
+    )
+    return pin, eff
+
+
+def _trust_summary_for_player(db: Session, community_id: str, player_id: str) -> TrustSummaryOut | None:
+    watch = (
+        db.scalar(
+            select(WatchlistEntry)
+            .where(
+                WatchlistEntry.community_id == community_id,
+                WatchlistEntry.player_id == player_id,
+                WatchlistEntry.status == "WATCHING",
+            )
+            .order_by(WatchlistEntry.updated_at.desc())
+            .limit(1)
+        )
+        or db.scalar(
+            select(WatchlistEntry)
+            .where(WatchlistEntry.community_id == community_id, WatchlistEntry.player_id == player_id)
+            .order_by(WatchlistEntry.updated_at.desc())
+            .limit(1)
+        )
+    )
+    cw_sig = db.scalar(
+        select(TrustSignal)
+        .where(
+            TrustSignal.community_id == community_id,
+            TrustSignal.player_id == player_id,
+            TrustSignal.provider == "cswatch",
+        )
+        .order_by(TrustSignal.observed_at.desc())
+        .limit(1)
+    )
+    cw_snap = None if cw_sig else db.scalar(
+        select(ProviderSnapshot)
+        .where(ProviderSnapshot.player_id == player_id, ProviderSnapshot.provider == "cswatch")
+        .order_by(ProviderSnapshot.fetched_at.desc())
+        .limit(1)
+    )
+    if not watch and not cw_sig and not cw_snap:
+        return None
+
+    cw_status = cw_sig.status if cw_sig else (cw_snap.status if cw_snap else None)
+    cw_summary = cw_sig.summary if cw_sig else (cw_snap.summary_text if cw_snap else None)
+    payload_raw = cw_sig.payload_json if cw_sig else (cw_snap.payload_json if cw_snap else None)
+    risk_level = None
+    rep_score = None
+    if payload_raw:
+        try:
+            pdata = json.loads(payload_raw)
+            risk_level = pdata.get("risk_level")
+            rep_score = pdata.get("reputation_score")
+        except json.JSONDecodeError:
+            pass
+
+    return TrustSummaryOut(
+        cswatch_status=cw_status,
+        cswatch_risk_level=risk_level,
+        cswatch_reputation_score=rep_score,
+        cswatch_summary=cw_summary,
+        watchlist_status=watch.status if watch else None,
+        watchlist_reason=watch.reason if watch else None,
+    )
 
 
 def _build_card_for_cp(
@@ -227,35 +409,58 @@ def record_alias_if_changed(
     return prev is not None and prev != cleaned
 
 
+def _external_identities_for_player(db: Session, player_id: str) -> list[ExternalIdentityOut]:
+    rows = db.scalars(
+        select(PlayerExternalIdentity).where(PlayerExternalIdentity.player_id == player_id)
+    ).all()
+    return [
+        ExternalIdentityOut(
+            id=r.id,
+            provider=r.provider,
+            external_id=r.external_id,
+            profile_url=r.profile_url,
+            verification_state=r.verification_state,
+            confidence=r.confidence,
+        )
+        for r in rows
+    ]
+
+
+def _match_records_for_player(db: Session, player_id: str) -> list[MatchRecordOut]:
+    rows = db.scalars(
+        select(PlayerMatchRecord)
+        .where(PlayerMatchRecord.player_id == player_id)
+        .order_by(PlayerMatchRecord.played_at.desc())
+        .limit(20)
+    ).all()
+    return [
+        MatchRecordOut(
+            id=m.id,
+            provider=m.provider,
+            external_match_id=m.external_match_id,
+            map_name=m.map_name,
+            game_mode=m.game_mode,
+            outcome=m.outcome,
+            score_text=m.score_text,
+            kd_ratio=m.kd_ratio,
+            adr=m.adr,
+            hs_pct=m.hs_pct,
+            leetify_rating=m.leetify_rating,
+            source_url=m.source_url,
+            played_at=m.played_at,
+        )
+        for m in rows
+    ]
+
+
 def to_player_out(db: Session, cp: CommunityPlayer) -> PlayerOut:
     p = cp.player
-    map_ratings: dict[str, float] = {}
-    if cp.map_ratings_json:
-        try:
-            map_ratings = json.loads(cp.map_ratings_json)
-        except json.JSONDecodeError:
-            map_ratings = {}
+    pin, eff = build_player_input(db, cp)
+    norm = normalize_player(pin)
 
-    norm = normalize_player(
-        PlayerInput(
-            community_player_id=cp.id,
-            display_name=cp.display_name,
-            steam_id64=p.steam_id64,
-            identity_status=p.identity_status,
-            manual_rating=cp.manual_rating,
-            premier_rating=cp.premier_rating,
-            premier_source=cp.premier_source,
-            premier_season=cp.premier_season,
-            faceit_elo=cp.faceit_elo,
-            leetify_rating=cp.leetify_rating,
-            recent_form=cp.recent_form,
-            primary_role=cp.primary_role,
-            secondary_role=cp.secondary_role,
-            map_ratings=map_ratings,
-        )
-    )
     aliases = _aliases_for_player(db, p.id)
     stats_list = _stats_for_player(db, p.id)
+    ext_ids = _external_identities_for_player(db, p.id)
     card = _build_card_for_cp(cp, norm.normalized_strength, norm.strength_band, stats_list)
 
     return PlayerOut(
@@ -286,26 +491,37 @@ def to_player_out(db: Session, cp: CommunityPlayer) -> PlayerOut:
         secondary_role=cp.secondary_role,
         notes=cp.notes,
         is_seeded=cp.is_seeded,
+        is_archived=cp.is_archived,
+        stats_stale=eff["stats_stale"],
         normalized_strength=norm.normalized_strength,
         confidence=norm.confidence,
         strength_band=norm.strength_band,
         missing_sources=norm.missing_sources,
         provider_statuses=_latest_snapshots_map(db, p.id),
         aliases=aliases,
+        external_identities=ext_ids,
         latest_stats=stats_list[0] if stats_list else None,
+        trust_summary=_trust_summary_for_player(db, cp.community_id, p.id),
         card=card,
         created_at=cp.created_at,
         updated_at=cp.updated_at,
     )
 
 
-def list_players(db: Session, community_id: str, query: str | None = None) -> list[PlayerOut]:
+def list_players(
+    db: Session,
+    community_id: str,
+    query: str | None = None,
+    include_archived: bool = False,
+) -> list[PlayerOut]:
     stmt = (
         select(CommunityPlayer)
         .options(joinedload(CommunityPlayer.player).joinedload(Player.aliases))
         .where(CommunityPlayer.community_id == community_id, CommunityPlayer.is_active.is_(True))
         .order_by(CommunityPlayer.display_name.asc())
     )
+    if not include_archived:
+        stmt = stmt.where(CommunityPlayer.is_archived.is_(False))
     rows = db.scalars(stmt).unique().all()
     if query and query.strip():
         q = query.strip().lower()
@@ -358,6 +574,40 @@ def _resolve_steam_fields(
     return None, None, None, "MANUAL_ONLY"
 
 
+async def create_player_with_resolution(
+    db: Session,
+    community_id: str,
+    payload: PlayerCreate,
+    steam_provider: SteamProvider | None = None,
+) -> PlayerOut:
+    """Resolves vanity URLs via Steam before running canonical duplicate checks and insertion."""
+    steam_id64, steam_url, vanity, _status = _resolve_steam_fields(
+        payload.steam_id64, payload.steam_profile_url
+    )
+    resolved_payload = payload
+    if not steam_id64 and vanity:
+        steam = steam_provider or SteamProvider()
+        resolved_sid, van_status = await steam.resolve_vanity_url(vanity)
+        if resolved_sid:
+            resolved_payload = payload.model_copy(
+                update={
+                    "steam_id64": resolved_sid,
+                    "steam_profile_url": f"https://steamcommunity.com/profiles/{resolved_sid}",
+                }
+            )
+            created = create_player(db, community_id, resolved_payload)
+            cp = _get_cp_or_404(db, community_id, created.id)
+            cp.player.vanity_name = vanity
+            cp.player.identity_status = "STEAM_RESOLVED"
+            db.commit()
+            return to_player_out(db, cp)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Vanity URL '{vanity}' could not be resolved to a SteamID64 ({van_status}).",
+        )
+    return create_player(db, community_id, resolved_payload)
+
+
 def create_player(db: Session, community_id: str, payload: PlayerCreate, is_seeded: bool = False) -> PlayerOut:
     steam_id64, steam_url, vanity, identity_status = _resolve_steam_fields(
         payload.steam_id64, payload.steam_profile_url
@@ -366,19 +616,39 @@ def create_player(db: Session, community_id: str, payload: PlayerCreate, is_seed
     global_player: Player | None = None
     if steam_id64:
         global_player = db.scalar(select(Player).where(Player.steam_id64 == steam_id64))
-        if global_player:
-            existing_cp = db.scalar(
-                select(CommunityPlayer).where(
-                    CommunityPlayer.community_id == community_id,
-                    CommunityPlayer.player_id == global_player.id,
-                    CommunityPlayer.is_active.is_(True),
+        if not global_player:
+            ext = db.scalar(
+                select(PlayerExternalIdentity).where(
+                    PlayerExternalIdentity.provider == "steam",
+                    PlayerExternalIdentity.external_id == steam_id64,
                 )
             )
-            if existing_cp:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Duplicate SteamID64 {steam_id64}: already registered as '{existing_cp.display_name}'.",
-                )
+            if ext:
+                global_player = db.scalar(select(Player).where(Player.id == ext.player_id))
+    elif vanity:
+        global_player = db.scalar(select(Player).where(Player.vanity_name == vanity))
+
+    if global_player:
+        existing_cp = db.scalar(
+            select(CommunityPlayer).where(
+                CommunityPlayer.community_id == community_id,
+                CommunityPlayer.player_id == global_player.id,
+            )
+        )
+        if existing_cp and existing_cp.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Duplicate identity ({steam_id64 or vanity}): already registered as '{existing_cp.display_name}'.",
+            )
+        if existing_cp and not existing_cp.is_active:
+            # Reactivate previously removed community membership without duplicating global Player
+            existing_cp.is_active = True
+            existing_cp.is_archived = False
+            existing_cp.display_name = payload.display_name.strip()
+            existing_cp.manual_rating = payload.manual_rating
+            db.commit()
+            db.refresh(existing_cp)
+            return to_player_out(db, existing_cp)
 
     if not global_player:
         global_player = Player(
@@ -511,9 +781,17 @@ def update_player(db: Session, community_id: str, community_player_id: str, payl
 
 
 def delete_player(db: Session, community_id: str, community_player_id: str) -> None:
+    """Removes player from the community without deleting global Player identity or match history."""
     cp = _get_cp_or_404(db, community_id, community_player_id)
-    db.delete(cp)
+    cp.is_active = False
     db.commit()
+
+
+def archive_player(db: Session, community_id: str, community_player_id: str, archived: bool = True) -> PlayerOut:
+    cp = _get_cp_or_404(db, community_id, community_player_id)
+    cp.is_archived = archived
+    db.commit()
+    return to_player_out(db, cp)
 
 
 def get_player_profile(db: Session, community_id: str, community_player_id: str) -> PlayerProfileOut:
@@ -524,6 +802,8 @@ def get_player_profile(db: Session, community_id: str, community_player_id: str)
         player=p_out,
         stat_snapshots=stats_list,
         aliases=p_out.aliases,
+        external_identities=p_out.external_identities,
+        match_records=_match_records_for_player(db, cp.player_id),
         provider_statuses=p_out.provider_statuses,
         card=p_out.card or _build_card_for_cp(cp, p_out.normalized_strength, p_out.strength_band, stats_list),
     )
@@ -598,6 +878,7 @@ async def refresh_player_profile(
     steam_provider: SteamProvider | None = None,
     faceit_provider: FaceitProvider | None = None,
     leetify_provider: LeetifyProvider | None = None,
+    cswatch_provider: CSWatchProvider | None = None,
 ) -> RefreshProfileResponse:
     """
     Cache-TTL-aware profile refresh.
@@ -757,31 +1038,165 @@ async def refresh_player_profile(
         if l_res.data.get("premier_rating") is not None:
             cp.premier_rating = int(l_res.data["premier_rating"])
             cp.premier_source = "leetify_public_api"
-        cstats = l_res.data.get("combat_stats") or {}
-        if cstats:
+        if l_res.data.get("faceit_elo") is not None and cp.faceit_elo is None:
+            cp.faceit_elo = int(l_res.data["faceit_elo"])
+        if l_res.data.get("recent_form") is not None:
+            cp.recent_form = float(l_res.data["recent_form"])
+        if l_res.data.get("map_deltas"):
+            cp.map_ratings_json = json.dumps(l_res.data["map_deltas"])
+        if l_res.data.get("persona_name"):
+            if record_alias_if_changed(db, player, l_res.data["persona_name"], source="leetify_public_api"):
+                alias_changed = True
+
+        # Link verified Leetify external identity
+        lt_ext_id = str(l_res.data.get("leetify_id") or sid)
+        existing_lt = db.scalar(
+            select(PlayerExternalIdentity).where(
+                PlayerExternalIdentity.provider == "leetify",
+                PlayerExternalIdentity.external_id == lt_ext_id,
+            )
+        )
+        if not existing_lt:
             db.add(
-                PlayerStatSnapshot(
+                PlayerExternalIdentity(
                     player_id=player.id,
                     provider="leetify",
-                    scope="recent",
-                    game_mode="Leetify CS2",
-                    sample_size=cstats.get("matches_played"),
-                    raw_rating_label="Leetify Rating",
-                    raw_rating_value=float(l_res.data["leetify_rating"]) if l_res.data.get("leetify_rating") is not None else None,
-                    matches_played=cstats.get("matches_played"),
-                    win_rate=cstats.get("win_rate"),
-                    kd_ratio=cstats.get("kd_ratio"),
-                    adr=cstats.get("adr"),
-                    kast=cstats.get("kast"),
-                    hs_pct=cstats.get("hs_pct"),
-                    opening_duel_pct=cstats.get("opening_duel_pct"),
-                    utility_damage_per_round=cstats.get("utility_damage_per_round"),
-                    flash_assists_per_round=cstats.get("flash_assists_per_round"),
-                    clutch_win_pct=cstats.get("clutch_win_pct"),
-                    freshness="FRESH",
-                    captured_at=now,
+                    external_id=lt_ext_id,
+                    profile_url=l_res.data.get("profile_url") or f"https://leetify.com/app/profile/{sid}",
+                    verification_state="VERIFIED",
+                    confidence=1.0,
                 )
             )
+
+        # Save recent 10 matches + lifetime snapshots (never empty-overwritten)
+        for scope_key, cstats_key in (("recent", "combat_stats_recent10"), ("lifetime", "combat_stats_lifetime")):
+            cstats = l_res.data.get(cstats_key) or (l_res.data.get("combat_stats") if scope_key == "recent" else None) or {}
+            if cstats:
+                db.add(
+                    PlayerStatSnapshot(
+                        player_id=player.id,
+                        provider="leetify",
+                        scope=scope_key,
+                        game_mode="Leetify CS2",
+                        sample_size=cstats.get("matches_played"),
+                        raw_rating_label="Leetify Rating",
+                        raw_rating_value=float(l_res.data["leetify_rating"]) if l_res.data.get("leetify_rating") is not None else None,
+                        matches_played=cstats.get("matches_played"),
+                        win_rate=cstats.get("win_rate"),
+                        kd_ratio=cstats.get("kd_ratio"),
+                        adr=cstats.get("adr"),
+                        kast=cstats.get("kast"),
+                        hs_pct=cstats.get("hs_pct"),
+                        opening_duel_pct=cstats.get("opening_duel_pct"),
+                        trade_kills_per_match=cstats.get("trade_kills_per_match"),
+                        utility_damage_per_round=cstats.get("utility_damage_per_round"),
+                        flash_assists_per_round=cstats.get("flash_assists_per_round"),
+                        clutch_win_pct=cstats.get("clutch_win_pct"),
+                        multi_kill_rate=cstats.get("multi_kill_rate"),
+                        consistency_score=cstats.get("consistency_score"),
+                        freshness="FRESH",
+                        captured_at=now,
+                    )
+                )
+
+        # Deduplicated match history records
+        for m in l_res.data.get("recent_matches") or []:
+            ext_mid = m.get("external_match_id")
+            if not ext_mid:
+                continue
+            exists_m = db.scalar(
+                select(PlayerMatchRecord).where(
+                    PlayerMatchRecord.player_id == player.id,
+                    PlayerMatchRecord.provider == "leetify",
+                    PlayerMatchRecord.external_match_id == ext_mid,
+                )
+            )
+            if not exists_m:
+                played_dt = now
+                if m.get("played_at"):
+                    try:
+                        played_dt = datetime.fromisoformat(str(m["played_at"]).replace("Z", "+00:00"))
+                    except ValueError:
+                        played_dt = now
+                db.add(
+                    PlayerMatchRecord(
+                        player_id=player.id,
+                        provider="leetify",
+                        external_match_id=ext_mid,
+                        map_name=m.get("map_name"),
+                        game_mode=m.get("game_mode"),
+                        outcome=m.get("outcome"),
+                        score_text=m.get("score_text"),
+                        kd_ratio=m.get("kd_ratio"),
+                        adr=m.get("adr"),
+                        hs_pct=m.get("hs_pct"),
+                        leetify_rating=m.get("leetify_rating"),
+                        source_url=f"https://leetify.com/app/match-details/{ext_mid}",
+                        played_at=played_dt,
+                    )
+                )
+
+        # Update refresh status if Steam key wasn't configured so Leetify counts as successful live sync
+        if player.refresh_status != "OK":
+            player.last_successful_refresh_at = now
+            player.refresh_status = "OK"
+            player.refresh_error = None
+
+    # Optional CSWatch public lookup (avatar + 3rd-party reputation) when not explicitly skipped
+    if cswatch_provider is not None or not (steam_provider and steam_provider.is_configured):
+        cw = cswatch_provider or CSWatchProvider()
+        cw_res = await cw.fetch_player(sid)
+        db.add(
+            ProviderSnapshot(
+                player_id=player.id,
+                provider="cswatch",
+                status=cw_res.status,
+                summary_text=cw_res.summary,
+                payload_json=json.dumps(cw_res.data) if cw_res.data else None,
+                fetched_at=now,
+            )
+        )
+        if cw_res.data:
+            if cw_res.data.get("avatar_url") and not player.avatar_url:
+                player.avatar_url = cw_res.data["avatar_url"]
+            if cw_res.data.get("persona_name"):
+                if record_alias_if_changed(db, player, cw_res.data["persona_name"], source="cswatch_public_api"):
+                    alias_changed = True
+            latest_cw_sig = db.scalar(
+                select(TrustSignal)
+                .where(
+                    TrustSignal.community_id == community_id,
+                    TrustSignal.player_id == player.id,
+                    TrustSignal.provider == "cswatch",
+                )
+                .order_by(TrustSignal.observed_at.desc())
+                .limit(1)
+            )
+            latest_obs = _ensure_utc(latest_cw_sig.observed_at) if latest_cw_sig else None
+            if (
+                latest_cw_sig
+                and latest_cw_sig.status == cw_res.status
+                and latest_cw_sig.summary == cw_res.summary
+                and latest_obs is not None
+                and (now - latest_obs) < timedelta(hours=6)
+            ):
+                latest_cw_sig.observed_at = now
+                latest_cw_sig.payload_json = json.dumps(cw_res.data)
+            else:
+                db.add(
+                    TrustSignal(
+                        community_id=community_id,
+                        player_id=player.id,
+                        category="THIRD_PARTY_REPUTATION",
+                        provider="cswatch",
+                        status=cw_res.status,
+                        summary=cw_res.summary,
+                        limitations="Third-party reputation from cswatch.gg — NOT an official Valve verdict.",
+                        source_url=cw_res.data.get("profile_url") or f"https://cswatch.gg/player/{sid}",
+                        payload_json=json.dumps(cw_res.data),
+                        observed_at=now,
+                    )
+                )
 
     db.commit()
     msg = (
@@ -799,6 +1214,43 @@ async def refresh_player_profile(
         alias_changed=alias_changed,
         message=msg,
     )
+
+
+async def refresh_all_players(
+    db: Session,
+    community_id: str,
+    force: bool = False,
+) -> dict:
+    """Refreshes active players with polite pacing to respect public provider rate limits."""
+    import asyncio as _asyncio
+
+    cps = db.scalars(
+        select(CommunityPlayer)
+        .options(joinedload(CommunityPlayer.player))
+        .where(
+            CommunityPlayer.community_id == community_id,
+            CommunityPlayer.is_active.is_(True),
+            CommunityPlayer.is_archived.is_(False),
+        )
+        .order_by(CommunityPlayer.display_name.asc())
+    ).all()
+    results = []
+    for idx, cp in enumerate(cps):
+        res = await refresh_player_profile(db, community_id, cp.id, force=force)
+        results.append(
+            {
+                "id": cp.id,
+                "display_name": cp.display_name,
+                "steam_id64": cp.player.steam_id64,
+                "refresh_status": res.profile.player.refresh_status,
+                "cache_hit": res.cache_hit,
+                "alias_changed": res.alias_changed,
+                "message": res.message,
+            }
+        )
+        if not res.cache_hit and idx < len(cps) - 1:
+            await _asyncio.sleep(1.5)
+    return {"total": len(results), "results": results}
 
 
 async def bulk_import_players(
@@ -988,7 +1440,15 @@ async def bulk_import_players(
 
 
 async def run_preflight_for_players(db: Session, community_id: str, community_player_ids: list[str]) -> list[PlayerOut]:
-    """Non-blocking preflight across Steam, FACEIT, and Leetify."""
+    """
+    Pre-match refresh for selected room players via refresh_player_profile:
+    - Refreshes Steam persona/avatar, Leetify profile + stats + recent matches,
+      CSWatch reputation/trust signals, and FACEIT (when configured).
+    - Respects provider TTL caching, timeouts, and rate-limit pacing.
+    - Preserves last known stored data if any provider fails.
+    """
+    import asyncio as _asyncio
+
     cps = db.scalars(
         select(CommunityPlayer)
         .options(joinedload(CommunityPlayer.player))
@@ -998,102 +1458,16 @@ async def run_preflight_for_players(db: Session, community_id: str, community_pl
             CommunityPlayer.is_active.is_(True),
         )
     ).all()
+    by_id = {cp.id: cp for cp in cps}
+    ordered_cps = [by_id[pid] for pid in community_player_ids if pid in by_id]
 
-    steam = SteamProvider()
-    faceit = FaceitProvider()
-    leetify = LeetifyProvider()
-
-    steam_ids = [cp.player.steam_id64 for cp in cps if cp.player.steam_id64]
-    summaries = await steam.fetch_summaries(steam_ids)
-    bans = await steam.fetch_bans(steam_ids)
-
-    now = datetime.now(timezone.utc)
-    for cp in cps:
-        sid = cp.player.steam_id64
-        if not sid:
-            db.add(
-                ProviderSnapshot(
-                    player_id=cp.player_id,
-                    provider="steam_profile",
-                    status="NOT_LINKED",
-                    summary_text="Manual-only profile (no SteamID64 linked).",
-                    fetched_at=now,
-                )
-            )
-            continue
-
-        cp.player.last_refresh_attempt_at = now
-        s_res = summaries.get(sid)
-        if s_res:
-            if s_res.status == "OK" and s_res.data:
-                record_alias_if_changed(db, cp.player, s_res.data.get("persona_name"), source="steam_web_api")
-                if s_res.data.get("avatar_url"):
-                    cp.player.avatar_url = s_res.data["avatar_url"]
-                cp.player.identity_status = "STEAM_RESOLVED"
-                cp.player.last_successful_refresh_at = now
-                cp.player.refresh_status = "OK"
-                cp.player.refresh_error = None
-            else:
-                cp.player.refresh_status = s_res.status
-                cp.player.refresh_error = s_res.summary
-            db.add(
-                ProviderSnapshot(
-                    player_id=cp.player_id,
-                    provider="steam_profile",
-                    status=s_res.status,
-                    summary_text=s_res.summary,
-                    payload_json=json.dumps(s_res.data) if s_res.data else None,
-                    fetched_at=now,
-                )
-            )
-
-        b_res = bans.get(sid)
-        if b_res:
-            db.add(
-                ProviderSnapshot(
-                    player_id=cp.player_id,
-                    provider="steam_bans",
-                    status=b_res.status,
-                    summary_text=b_res.summary,
-                    payload_json=json.dumps(b_res.data) if b_res.data else None,
-                    fetched_at=now,
-                )
-            )
-
-        f_res = await faceit.fetch_by_steam_id64(sid)
-        if f_res.status == "OK" and f_res.data.get("faceit_elo"):
-            cp.faceit_elo = int(f_res.data["faceit_elo"])
-        db.add(
-            ProviderSnapshot(
-                player_id=cp.player_id,
-                provider="faceit",
-                status=f_res.status,
-                summary_text=f_res.summary,
-                payload_json=json.dumps(f_res.data) if f_res.data else None,
-                fetched_at=now,
-            )
-        )
-
-        l_res = await leetify.fetch_by_steam_id64(sid)
-        if l_res.status == "OK":
-            if l_res.data.get("leetify_rating") is not None:
-                cp.leetify_rating = float(l_res.data["leetify_rating"])
-            if l_res.data.get("premier_rating") is not None:
-                cp.premier_rating = int(l_res.data["premier_rating"])
-                cp.premier_source = "leetify_public_api"
-        db.add(
-            ProviderSnapshot(
-                player_id=cp.player_id,
-                provider="leetify",
-                status=l_res.status,
-                summary_text=l_res.summary,
-                payload_json=json.dumps(l_res.data) if l_res.data else None,
-                fetched_at=now,
-            )
-        )
-
-    db.commit()
-    return [to_player_out(db, cp) for cp in cps]
+    out: list[PlayerOut] = []
+    for idx, cp in enumerate(ordered_cps):
+        res = await refresh_player_profile(db, community_id, cp.id, force=False)
+        out.append(res.profile.player)
+        if not res.cache_hit and cp.player.steam_id64 and idx < len(ordered_cps) - 1:
+            await _asyncio.sleep(0.6)
+    return out
 
 
 DEMO_PLAYERS = [

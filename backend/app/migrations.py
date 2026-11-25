@@ -39,3 +39,4 @@ def run_migrations(engine: Engine) -> None:
         _add_column_if_missing(conn, "community_players", "hidden_badges_json", "TEXT")
         _add_column_if_missing(conn, "community_players", "card_tagline_variant", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "community_players", "stats_visibility", "VARCHAR(24) NOT NULL DEFAULT 'COMMUNITY'")
+        _add_column_if_missing(conn, "community_players", "is_archived", "BOOLEAN NOT NULL DEFAULT 0")

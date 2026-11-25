@@ -545,3 +545,35 @@ h1, h2, h3, h4 {
   flex-direction: column;
   gap: 0.12rem;
 }
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.hero-panel {
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at 85% 20%, rgba(232, 155, 45, 0.14), transparent 52%),
+    radial-gradient(circle at 15% 80%, rgba(56, 189, 248, 0.1), transparent 50%),
+    linear-gradient(155deg, #141c2b 0%, #0b0f17 100%);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 1.5rem;
+}
+
+@keyframes pulseBar {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 1; }
+}
+
+.hero-balance-pill {
+  animation: pulseBar 3.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -86,7 +86,9 @@ export const MatchRoomView: React.FC<Props> = ({
   // Copy states
   const [copiedDiscord, setCopiedDiscord] = useState(false);
   const [copiedShare, setCopiedShare] = useState(false);
-  const [preflightNote, setPreflightNote] = useState<string | null>(null);
+  const [preflightResults, setPreflightResults] = useState<Player[] | null>(null);
+  const [quickError, setQuickError] = useState<string | null>(null);
+  const [showDetailedStats, setShowDetailedStats] = useState(false);
 
   const activeProposal: Proposal | null = room.proposals[0] || null;
   const isFinalized = room.status === 'FINALIZED';
@@ -156,10 +158,15 @@ export const MatchRoomView: React.FC<Props> = ({
     e.preventDefault();
     if (!quickName.trim()) return;
     setBusy(true);
+    setQuickError(null);
     try {
       const trimmedSteam = quickSteam.trim();
       const isRawId = /^7656119\d{10}$/.test(trimmedSteam);
-      const isUrl = trimmedSteam.includes('steamcommunity.com');
+      const isUrl =
+        trimmedSteam.includes('steamcommunity.com') ||
+        trimmedSteam.includes('csstats.gg') ||
+        trimmedSteam.includes('leetify.com') ||
+        trimmedSteam.includes('cswatch.gg');
       const created = await api.createPlayer({
         display_name: quickName.trim(),
         steam_id64: isRawId ? trimmedSteam : null,
@@ -178,7 +185,9 @@ export const MatchRoomView: React.FC<Props> = ({
       setQuickRole('');
       setShowQuickAdd(false);
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : 'Failed to add player.');
+      const msg = err instanceof ApiError ? err.message : 'Failed to add player.';
+      setQuickError(msg);
+      onError(msg);
     } finally {
       setBusy(false);
     }
@@ -266,18 +275,80 @@ export const MatchRoomView: React.FC<Props> = ({
   const handlePreflight = async () => {
     setBusy(true);
     try {
-      await api.runRoomPreflight(room.id);
+      const results = await api.runRoomPreflight(room.id);
       await onRefreshPlayers();
       const refreshed = await api.getRoom(room.id);
       onRoomUpdated(refreshed);
-      setPreflightNote(
-        'Preflight completed (non-blocking). Unconfigured external providers remain Unavailable/Not configured and do not block team generation.',
-      );
+      setPreflightResults(results);
     } catch (err) {
-      onError(err instanceof ApiError ? err.message : 'Preflight check error.');
+      onError(err instanceof ApiError ? err.message : 'Refresh check error.');
     } finally {
       setBusy(false);
     }
+  };
+
+  const getPlayerSafetyWarnings = (p: Player) => {
+    const warnings: Array<{ key: string; label: string; title: string; badgeClass: string }> = [];
+    const ts = p.trust_summary;
+    const risk = (ts?.cswatch_risk_level || '').toLowerCase();
+    if (ts?.cswatch_status === 'FLAGGED' || risk === 'high' || risk === 'critical') {
+      warnings.push({
+        key: 'cswatch',
+        label: `CSWatch ${ts?.cswatch_risk_level || 'Flagged'}`,
+        title: `${ts?.cswatch_summary || 'CSWatch flagged signal.'} Informational only — never a cheat verdict and never alters skill rating.`,
+        badgeClass: 'badge-danger',
+      });
+    } else if (risk === 'medium' || (ts?.cswatch_reputation_score != null && ts.cswatch_reputation_score < 60)) {
+      warnings.push({
+        key: 'cswatch',
+        label: `CSWatch Rep ${ts?.cswatch_reputation_score ?? '?'}`,
+        title: `${ts?.cswatch_summary || 'CSWatch caution.'} Informational only — never alters skill rating.`,
+        badgeClass: 'badge-warn',
+      });
+    }
+    if (ts?.watchlist_status === 'WATCHING') {
+      warnings.push({
+        key: 'watchlist',
+        label: 'Watchlist',
+        title: `${ts.watchlist_reason || 'On community watchlist.'} Informational only — never alters skill rating.`,
+        badgeClass: 'badge-warn',
+      });
+    }
+    if (!p.steam_id64 || p.identity_status !== 'STEAM_RESOLVED') {
+      warnings.push({
+        key: 'identity',
+        label: 'Unverified ID',
+        title: p.steam_id64 ? `Identity status: ${p.identity_status}` : 'Manual-only player without verified SteamID64.',
+        badgeClass: 'badge-warn',
+      });
+    }
+    if (p.stats_stale) {
+      warnings.push({
+        key: 'stale',
+        label: 'Stale Stats',
+        title: 'Latest combat statistics are older cached data (>= 14 days or marked STALE).',
+        badgeClass: 'badge-warn',
+      });
+    }
+    const unavailableProvs = (p.provider_statuses || []).filter(
+      (s) =>
+        s.provider !== 'faceit' &&
+        s.provider !== 'steam_bans' &&
+        (s.status === 'UNAVAILABLE' || s.status === 'RATE_LIMITED' || s.status === 'PRIVATE'),
+    );
+    if (p.steam_id64 && (unavailableProvs.length > 0 || (p.refresh_status !== 'OK' && p.refresh_status !== 'NEVER_REFRESHED'))) {
+      const labelText =
+        unavailableProvs.length > 0
+          ? `${unavailableProvs[0].provider}: ${unavailableProvs[0].status.replace('_', ' ')}`
+          : `Provider ${p.refresh_status}`;
+      warnings.push({
+        key: 'provider_unavail',
+        label: labelText,
+        title: unavailableProvs.map((u) => `${u.provider}: ${u.summary}`).join(' | ') || p.refresh_error || 'Provider data unavailable; using cached data.',
+        badgeClass: 'badge-warn',
+      });
+    }
+    return warnings;
   };
 
   const handleGenerate = async (isRegen: boolean, forceCycle = false) => {
@@ -424,12 +495,33 @@ export const MatchRoomView: React.FC<Props> = ({
   const availableToPick = players.filter((p) => {
     const q = search.trim().toLowerCase();
     if (!q) return true;
+    const aliasHit = p.aliases.some(
+      (a) =>
+        a.alias_name.toLowerCase().includes(q) ||
+        (a.previous_name && a.previous_name.toLowerCase().includes(q)),
+    );
     return (
       p.display_name.toLowerCase().includes(q) ||
       (p.steam_id64 && p.steam_id64.includes(q)) ||
-      (p.primary_role && p.primary_role.toLowerCase().includes(q))
+      (p.steam_persona_name && p.steam_persona_name.toLowerCase().includes(q)) ||
+      (p.vanity_name && p.vanity_name.toLowerCase().includes(q)) ||
+      (p.primary_role && p.primary_role.toLowerCase().includes(q)) ||
+      aliasHit
     );
   });
+
+  const handleResetSelection = async () => {
+    if (isFinalized || selectedIds.length === 0) return;
+    setBusy(true);
+    try {
+      const updated = await api.setRoster(room.id, []);
+      onRoomUpdated(updated);
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Failed to clear selection.');
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const lockMap = new Map(room.roster.map((r) => [r.player.id, r.locked_team]));
   const snapshotMap = new Map<string, ProposalSnapshotPlayer>(
@@ -529,28 +621,56 @@ export const MatchRoomView: React.FC<Props> = ({
           </div>
 
           <div className="row" style={{ marginBottom: '0.75rem' }}>
-            <span className="badge">Maps: Random (Active Pool)</span>
+            <span className="badge">Maps: Random</span>
             {room.selected_count < 10 && !isFinalized && (
               <button className="btn btn-xs" onClick={handleQuickSelectTen} disabled={busy}>
-                <Sparkles size={12} /> {players.length < 10 ? 'Load Demo 10 & Fill' : 'Auto-Fill to 10'}
+                <Sparkles size={12} /> {players.length < 10 ? 'Load Demo 10 & Fill' : 'Fill to 10'}
+              </button>
+            )}
+            {room.selected_count > 0 && !isFinalized && (
+              <button className="btn btn-xs" onClick={handleResetSelection} disabled={busy}>
+                Reset Selection
               </button>
             )}
             <button
               className="btn btn-xs"
               onClick={handlePreflight}
               disabled={busy || room.selected_count === 0}
-              title="Check Steam/FACEIT/Leetify if configured (non-blocking)"
+              title="Refresh Steam/Leetify/CSWatch status (non-blocking)"
             >
-              Run Preflight
+              Refresh Status
             </button>
           </div>
 
-          {preflightNote && (
-            <div className="alert alert-warn" style={{ marginBottom: '0.75rem', padding: '0.55rem 0.7rem' }}>
-              <span className="small">{preflightNote}</span>
-              <button className="btn btn-xs" onClick={() => setPreflightNote(null)}>
-                OK
-              </button>
+          {preflightResults && (
+            <div className="card" style={{ background: 'var(--bg-canvas)', marginBottom: '0.75rem', padding: '0.6rem 0.75rem' }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                <strong className="small">Pre-Match Refresh Report ({preflightResults.length} players)</strong>
+                <button className="btn btn-xs" onClick={() => setPreflightResults(null)}>
+                  Dismiss
+                </button>
+              </div>
+              <div className="stack" style={{ gap: '0.25rem', maxHeight: '165px', overflowY: 'auto' }}>
+                {preflightResults.map((pr) => {
+                  const byProv = new Map(pr.provider_statuses.map((s) => [s.provider, s.status]));
+                  const stStatus = byProv.get('steam_profile') || pr.refresh_status;
+                  const ltStatus = byProv.get('leetify') || (pr.steam_id64 ? 'NOT_CHECKED' : 'NOT_LINKED');
+                  const cwStatus = byProv.get('cswatch') || (pr.steam_id64 ? 'NOT_CHECKED' : 'NOT_LINKED');
+                  return (
+                    <div key={pr.id} className="row" style={{ justifyContent: 'space-between', gap: '0.35rem', fontSize: '0.75rem' }}>
+                      <span style={{ fontWeight: 600 }}>{pr.display_name}</span>
+                      <div className="row" style={{ gap: '0.25rem' }}>
+                        <span className={`badge ${stStatus === 'OK' ? 'badge-ok' : 'badge-warn'}`}>Steam:{stStatus}</span>
+                        <span className={`badge ${ltStatus === 'OK' ? 'badge-ok' : ltStatus === 'NOT_LINKED' ? '' : 'badge-warn'}`}>Leetify:{ltStatus}</span>
+                        <span className={`badge ${cwStatus === 'OK' ? 'badge-ok' : cwStatus === 'FLAGGED' ? 'badge-danger' : 'badge-warn'}`}>CSWatch:{cwStatus}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="small muted" style={{ marginTop: '0.35rem' }}>
+                Cached/previously stored data is preserved when providers are rate-limited, private, or unconfigured.
+              </div>
             </div>
           )}
 
@@ -563,6 +683,7 @@ export const MatchRoomView: React.FC<Props> = ({
             ) : (
               room.roster.map((entry) => {
                 const p = entry.player;
+                const safetyWarnings = getPlayerSafetyWarnings(p);
                 return (
                   <div key={p.id} className="player-row selected" style={{ padding: '0.45rem 0.6rem' }}>
                     <div style={{ minWidth: 0 }}>
@@ -574,6 +695,20 @@ export const MatchRoomView: React.FC<Props> = ({
                       <div className="small muted mono">
                         Str {p.normalized_strength.toFixed(1)} • {p.steam_id64 ? 'SteamID' : 'Manual'}
                       </div>
+                      {safetyWarnings.length > 0 && (
+                        <div className="row" style={{ gap: '0.25rem', marginTop: '0.22rem', flexWrap: 'wrap' }}>
+                          {safetyWarnings.map((w) => (
+                            <span
+                              key={w.key}
+                              className={`badge ${w.badgeClass}`}
+                              style={{ fontSize: '0.67rem', padding: '0.1rem 0.35rem' }}
+                              title={w.title}
+                            >
+                              {w.label}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     {!isFinalized && (
                       <div className="row" style={{ gap: '0.25rem' }}>
@@ -641,6 +776,11 @@ export const MatchRoomView: React.FC<Props> = ({
               style={{ background: 'var(--bg-canvas)', padding: '0.65rem', marginBottom: '0.65rem' }}
             >
               <div className="stack" style={{ gap: '0.45rem' }}>
+                {quickError && (
+                  <div className="alert alert-danger" style={{ padding: '0.45rem 0.6rem' }}>
+                    <span className="small">{quickError}</span>
+                  </div>
+                )}
                 <input
                   className="input"
                   required
@@ -650,7 +790,7 @@ export const MatchRoomView: React.FC<Props> = ({
                 />
                 <input
                   className="input mono"
-                  placeholder="SteamID64 or /profiles/ URL (optional)"
+                  placeholder="SteamID64, /id/vanity, /profiles/, or CSStats URL"
                   value={quickSteam}
                   onChange={(e) => setQuickSteam(e.target.value)}
                 />
@@ -700,17 +840,23 @@ export const MatchRoomView: React.FC<Props> = ({
             />
           </div>
 
-          <div className="stack" style={{ gap: '0.35rem', maxHeight: '240px', overflowY: 'auto' }}>
+          <div className="stack" style={{ gap: '0.35rem', maxHeight: '260px', overflowY: 'auto' }}>
             {availableToPick.map((p) => {
               const inRoom = selectedSet.has(p.id);
               return (
                 <div key={p.id} className="player-row" style={{ padding: '0.4rem 0.6rem' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div className="row" style={{ gap: '0.35rem' }}>
-                      <span style={{ fontSize: '0.84rem', fontWeight: 600 }}>{p.display_name}</span>
-                      {p.primary_role && <span className="badge">{p.primary_role}</span>}
+                  <div className="row" style={{ gap: '0.5rem', minWidth: 0 }}>
+                    <PlayerAvatar name={p.display_name} avatarUrl={p.avatar_url} role={p.primary_role} size={28} />
+                    <div style={{ minWidth: 0 }}>
+                      <div className="row" style={{ gap: '0.35rem' }}>
+                        <span style={{ fontSize: '0.84rem', fontWeight: 600 }}>{p.display_name}</span>
+                        {p.primary_role && <span className="badge">{p.primary_role}</span>}
+                      </div>
+                      <div className="small muted mono">
+                        Rating {p.normalized_strength.toFixed(1)}
+                        {p.premier_rating != null ? ` • Prem ${p.premier_rating.toLocaleString()}` : ''}
+                      </div>
                     </div>
-                    <div className="small muted mono">Str {p.normalized_strength.toFixed(1)}</div>
                   </div>
                   {replacingId && !inRoom ? (
                     <button className="btn btn-xs btn-primary" onClick={() => handleReplace(p.id)} disabled={busy}>
@@ -723,7 +869,7 @@ export const MatchRoomView: React.FC<Props> = ({
                       onClick={() => handleTogglePlayer(p.id)}
                     >
                       {inRoom ? <UserMinus size={12} /> : <UserPlus size={12} />}
-                      {inRoom ? 'Remove' : 'Select'}
+                      {inRoom ? 'Remove' : 'Add'}
                     </button>
                   )}
                 </div>
@@ -801,30 +947,30 @@ export const MatchRoomView: React.FC<Props> = ({
                 onClick={() => handleGenerate(false)}
               >
                 <Sparkles size={15} />
-                {activeProposal ? 'Generate Initial' : 'Generate Teams (126 Splits)'}
+                {activeProposal ? 'Create Fresh Teams' : 'Create Teams'}
               </button>
 
               {activeProposal && !isFinalized && (
                 <button className="btn" disabled={busy} onClick={() => handleGenerate(true)}>
-                  <RefreshCw size={15} /> Regenerate (New Split)
+                  <RefreshCw size={15} /> Regenerate
                 </button>
               )}
 
-              <div className="row" style={{ gap: '0.3rem' }}>
-                <span className="small muted">Seed</span>
-                <input
-                  className="input mono"
-                  style={{ width: '68px', padding: '0.35rem 0.45rem' }}
-                  type="number"
-                  value={seed}
-                  onChange={(e) => setSeed(e.target.value)}
-                />
-              </div>
+              {activeProposal?.parent_generation_id && !isFinalized && (
+                <button
+                  className="btn"
+                  disabled={busy}
+                  onClick={() => handleRestore(activeProposal.parent_generation_id!)}
+                  title="Undo back to the previous team split"
+                >
+                  <RotateCcw size={15} /> Undo
+                </button>
+              )}
             </div>
 
             {activeProposal && !isFinalized && (
               <button className="btn btn-ok" disabled={busy} onClick={handleFinalize}>
-                <ShieldCheck size={15} /> Finalize Proposal #{activeProposal.proposal_number}
+                <ShieldCheck size={15} /> Finalize Teams (#{activeProposal.proposal_number})
               </button>
             )}
             {isFinalized && (
@@ -836,7 +982,7 @@ export const MatchRoomView: React.FC<Props> = ({
 
           {room.selected_count !== 10 && (
             <p className="muted small" style={{ margin: '0.55rem 0 0' }}>
-              Select exactly 10 unique players ({room.selected_count}/10 currently selected) to enable the 126-partition optimizer.
+              Select 10 unique players ({room.selected_count}/10 selected) to build two balanced 5v5 teams.
             </p>
           )}
         </div>
@@ -903,27 +1049,21 @@ export const MatchRoomView: React.FC<Props> = ({
             <div className="card">
               <div className="card-header">
                 <div className="row">
-                  <h3>Proposal #{activeProposal.proposal_number}</h3>
+                  <h3>Matchup #{activeProposal.proposal_number}</h3>
                   <span className="badge">{activeProposal.action_type}</span>
                   <span
                     className={`badge ${
-                      activeProposal.strength_diff <= 3.5
+                      activeProposal.strength_diff <= 1.5
                         ? 'badge-ok'
-                        : activeProposal.strength_diff <= 6.5
-                          ? 'badge-warn'
-                          : 'badge-danger'
+                        : activeProposal.strength_diff <= 3.8
+                          ? 'badge-a'
+                          : 'badge-warn'
                     }`}
                   >
-                    {activeProposal.explanation.balance_indicator} • Diff{' '}
-                    <span className="mono">{activeProposal.strength_diff.toFixed(2)}</span>
-                  </span>
-                  <span className="badge">
-                    Conf {Math.round((activeProposal.explanation.avg_confidence || 0.55) * 100)}%
+                    {activeProposal.explanation.matchup_label || activeProposal.explanation.balance_indicator}
                   </span>
                 </div>
-                <span className="small muted mono">
-                  {activeProposal.algorithm_version} • seed {activeProposal.seed}
-                </span>
+                <span className="small muted">{activeProposal.explanation.map_policy_note}</span>
               </div>
 
               {/* Swap Preview Bar */}
@@ -977,24 +1117,48 @@ export const MatchRoomView: React.FC<Props> = ({
                 {renderTeamCard('B', activeProposal.team_b_ids, activeProposal.team_b_strength)}
               </div>
 
-              {/* Explanation */}
+              {/* CS2-Native Matchup Breakdown */}
               <div
                 className="card"
-                style={{ background: 'var(--bg-canvas)', marginTop: '0.85rem', padding: '0.8rem' }}
+                style={{ background: 'var(--bg-canvas)', marginTop: '0.85rem', padding: '0.9rem' }}
               >
-                <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.35rem' }}>
-                  <strong className="small">Optimizer Explanation</strong>
-                  <span className="small muted">{activeProposal.explanation.map_policy_note}</span>
+                <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.55rem' }}>
+                  <strong>Why this should be a good match</strong>
+                  <button
+                    type="button"
+                    className="btn btn-xs"
+                    onClick={() => setShowDetailedStats(!showDetailedStats)}
+                  >
+                    {showDetailedStats ? 'Hide Detailed Stats Breakdown' : 'Show Detailed Stats Breakdown'}
+                  </button>
                 </div>
-                <p className="muted" style={{ margin: '0 0 0.5rem', fontSize: '0.84rem' }}>
-                  {activeProposal.explanation.summary}
+
+                <p style={{ margin: '0 0 0.75rem', fontSize: '0.88rem', color: 'var(--text-primary)' }}>
+                  {activeProposal.explanation.good_match_summary || activeProposal.explanation.summary}
                 </p>
+
+                {(activeProposal.explanation.team_a_notes || activeProposal.explanation.team_b_notes) && (
+                  <div className="grid-2" style={{ gap: '0.75rem', marginBottom: '0.65rem' }}>
+                    <div className="card" style={{ background: 'var(--bg-surface)', padding: '0.7rem' }}>
+                      <strong className="small" style={{ color: 'var(--team-a)' }}>Team A Profile</strong>
+                      <div className="stack" style={{ gap: '0.25rem', marginTop: '0.35rem' }}>
+                        {(activeProposal.explanation.team_a_notes || []).map((note, idx) => (
+                          <div key={idx} className="small muted">• {note}</div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="card" style={{ background: 'var(--bg-surface)', padding: '0.7rem' }}>
+                      <strong className="small" style={{ color: 'var(--team-b)' }}>Team B Profile</strong>
+                      <div className="stack" style={{ gap: '0.25rem', marginTop: '0.35rem' }}>
+                        {(activeProposal.explanation.team_b_notes || []).map((note, idx) => (
+                          <div key={idx} className="small muted">• {note}</div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="row" style={{ gap: '0.4rem' }}>
-                  {activeProposal.explanation.role_notes?.map((note, idx) => (
-                    <span key={idx} className="badge">
-                      {note}
-                    </span>
-                  ))}
                   {activeProposal.explanation.constraints_honored?.map((c, idx) => (
                     <span key={idx} className="badge badge-ok">
                       {c}
@@ -1002,10 +1166,41 @@ export const MatchRoomView: React.FC<Props> = ({
                   ))}
                   {activeProposal.explanation.manual_only_count > 0 && (
                     <span className="badge badge-warn">
-                      <AlertTriangle size={11} /> {activeProposal.explanation.manual_only_count}/10 Manual Baseline Only
+                      <AlertTriangle size={11} /> {activeProposal.explanation.manual_only_count}/10 lack external stats
                     </span>
                   )}
                 </div>
+
+                {showDetailedStats && (
+                  <div className="card" style={{ background: 'var(--bg-elevated)', marginTop: '0.7rem', padding: '0.7rem' }}>
+                    <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+                      <strong className="small">Detailed Stats Breakdown</strong>
+                      <div className="row" style={{ gap: '0.35rem' }}>
+                        <span className="small muted">Rating Gap: <strong className="mono">{activeProposal.strength_diff.toFixed(2)}</strong></span>
+                        <span className="small muted">Confidence: <strong className="mono">{Math.round((activeProposal.explanation.avg_confidence || 0.55) * 100)}%</strong></span>
+                        {activeProposal.explanation.data_coverage_pct != null && (
+                          <span className="small muted">Coverage: <strong className="mono">{activeProposal.explanation.data_coverage_pct}%</strong></span>
+                        )}
+                      </div>
+                    </div>
+                    {activeProposal.explanation.player_contributions?.map((c, idx) => (
+                      <div key={idx} className="small muted">• {c}</div>
+                    ))}
+                    {activeProposal.explanation.recent_form_summary && (
+                      <div className="small muted">• {activeProposal.explanation.recent_form_summary}</div>
+                    )}
+                    <div className="row" style={{ marginTop: '0.45rem', gap: '0.35rem' }}>
+                      <span className="small muted">Seed</span>
+                      <input
+                        className="input mono"
+                        style={{ width: '74px', padding: '0.2rem 0.4rem', fontSize: '0.78rem' }}
+                        type="number"
+                        value={seed}
+                        onChange={(e) => setSeed(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1020,31 +1215,41 @@ export const MatchRoomView: React.FC<Props> = ({
                   <p className="muted small">No additional distinct splits under current locks.</p>
                 ) : (
                   <div className="stack" style={{ gap: '0.5rem' }}>
-                    {activeProposal.alternatives.map((alt, idx) => (
-                      <div key={alt.partition_key} className="player-row" style={{ alignItems: 'flex-start' }}>
-                        <div style={{ minWidth: 0 }}>
-                          <div className="row" style={{ gap: '0.4rem' }}>
-                            <strong className="small">Option #{idx + 1}</strong>
-                            <span className="badge mono">Diff {alt.strength_diff.toFixed(2)}</span>
-                            <span className="small muted mono">
-                              {alt.team_a_strength.toFixed(1)} vs {alt.team_b_strength.toFixed(1)}
-                            </span>
+                    {activeProposal.alternatives.map((alt, idx) => {
+                      const cmp = activeProposal.explanation.alternative_comparisons?.find(
+                        (c) => c.partition_key === alt.partition_key,
+                      );
+                      return (
+                        <div key={alt.partition_key} className="player-row" style={{ alignItems: 'flex-start' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div className="row" style={{ gap: '0.4rem' }}>
+                              <strong className="small">Option #{idx + 1}</strong>
+                              <span className="badge mono">Diff {alt.strength_diff.toFixed(2)}</span>
+                              <span className="small muted mono">
+                                {alt.team_a_strength.toFixed(1)} vs {alt.team_b_strength.toFixed(1)}
+                              </span>
+                            </div>
+                            <div className="small muted" style={{ marginTop: '0.25rem' }}>
+                              A: {alt.team_a_ids.map((id) => playerMap.get(id)?.display_name || id).join(', ')}
+                            </div>
+                            {cmp && (
+                              <div className="small muted" style={{ marginTop: '0.2rem' }}>
+                                {cmp.moved_players} • {cmp.trade_off}
+                              </div>
+                            )}
                           </div>
-                          <div className="small muted" style={{ marginTop: '0.25rem' }}>
-                            A: {alt.team_a_ids.map((id) => playerMap.get(id)?.display_name || id).join(', ')}
-                          </div>
+                          {!isFinalized && (
+                            <button
+                              className="btn btn-xs"
+                              disabled={busy}
+                              onClick={() => handleAdoptAlternative(alt.partition_key)}
+                            >
+                              Use Split
+                            </button>
+                          )}
                         </div>
-                        {!isFinalized && (
-                          <button
-                            className="btn btn-xs"
-                            disabled={busy}
-                            onClick={() => handleAdoptAlternative(alt.partition_key)}
-                          >
-                            Use Split
-                          </button>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -1203,7 +1408,7 @@ export const MatchRoomView: React.FC<Props> = ({
             <h3>Ready for 5v5 Team Generation</h3>
             <p className="muted" style={{ maxWidth: '500px', margin: '0.5rem auto 0' }}>
               Select 10 unique players in the roster panel on the left, then click{' '}
-              <strong>Generate Teams (126 Splits)</strong>. Maps remain random — no map picker is used.
+              <strong>Create Teams</strong>. Maps remain random — no map picker is used.
             </p>
           </div>
         )}

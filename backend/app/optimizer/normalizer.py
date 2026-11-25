@@ -71,7 +71,11 @@ def normalize_faceit(elo: int | float) -> float:
 
 
 def normalize_leetify(rating: float) -> float:
-    return _piecewise_linear(float(rating), LEETIFY_ANCHORS)
+    val = float(rating)
+    # Leetify v3 ranks.leetify uses percentage points (e.g. +2.84) while match ratings use decimal (+0.0284)
+    if abs(val) > 0.5:
+        val = val / 100.0
+    return _piecewise_linear(val, LEETIFY_ANCHORS)
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,19 @@ class PlayerInput:
     primary_role: str | None = None
     secondary_role: str | None = None
     map_ratings: dict[str, float] = field(default_factory=dict)
+    # Available source-qualified combat stats (optional, missing = None)
+    adr: float | None = None
+    kd_ratio: float | None = None
+    kast: float | None = None
+    opening_duel_pct: float | None = None
+    trade_kills_per_match: float | None = None
+    utility_damage_per_round: float | None = None
+    flash_assists_per_round: float | None = None
+    clutch_win_pct: float | None = None
+    consistency_score: float | None = None
+    win_rate: float | None = None
+    stats_sample_size: int = 0
+    stats_stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -109,6 +126,18 @@ class NormalizedPlayer:
     primary_role: str | None
     secondary_role: str | None
     map_adjustments: dict[str, float]
+    adr: float | None = None
+    kd_ratio: float | None = None
+    kast: float | None = None
+    opening_duel_pct: float | None = None
+    trade_kills_per_match: float | None = None
+    utility_damage_per_round: float | None = None
+    flash_assists_per_round: float | None = None
+    clutch_win_pct: float | None = None
+    consistency_score: float | None = None
+    win_rate: float | None = None
+    stats_sample_size: int = 0
+    stats_stale: bool = False
 
 
 def _strength_band(score: float) -> str:
@@ -166,6 +195,17 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
         strength = round(weighted_sum / total_weight, 3)
         confidence = {1: 0.72, 2: 0.85, 3: 0.95}.get(external_count, 0.95)
 
+    # Gentle combat performance shrinkage adjustment if sample size >= 5 (never overfits to K/D)
+    if player.stats_sample_size >= 5 and player.adr is not None:
+        adr_score = _piecewise_linear(player.adr, [(50.0, 28.0), (70.0, 50.0), (85.0, 70.0), (100.0, 88.0), (115.0, 96.0)])
+        shrink = min(0.20, 0.08 + (min(player.stats_sample_size, 30) / 30.0) * 0.12)
+        if player.stats_stale:
+            shrink *= 0.5
+        strength = round((1.0 - shrink) * strength + shrink * adr_score, 3)
+
+    if player.stats_stale and confidence > 0.5:
+        confidence = round(max(0.45, confidence - 0.12), 2)
+
     has_form = player.recent_form is not None
     if has_form:
         form_norm = max(-1.0, min(1.0, float(player.recent_form))) * 10.0
@@ -196,4 +236,16 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
         primary_role=player.primary_role,
         secondary_role=player.secondary_role,
         map_adjustments=map_adj,
+        adr=player.adr,
+        kd_ratio=player.kd_ratio,
+        kast=player.kast,
+        opening_duel_pct=player.opening_duel_pct,
+        trade_kills_per_match=player.trade_kills_per_match,
+        utility_damage_per_round=player.utility_damage_per_round,
+        flash_assists_per_round=player.flash_assists_per_round,
+        clutch_win_pct=player.clutch_win_pct,
+        consistency_score=player.consistency_score,
+        win_rate=player.win_rate,
+        stats_sample_size=player.stats_sample_size,
+        stats_stale=player.stats_stale,
     )

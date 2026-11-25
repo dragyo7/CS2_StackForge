@@ -1,19 +1,32 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, Award, LayoutDashboard, Plus, Swords, Users } from 'lucide-react';
-import { api, ApiError } from './api';
+import {
+  Activity,
+  Award,
+  LayoutDashboard,
+  LogIn,
+  LogOut,
+  Plus,
+  Shield,
+  Swords,
+  Users,
+} from 'lucide-react';
+import { api, ApiError, setStoredToken } from './api';
 import { DashboardView } from './components/DashboardView';
+import { LandingAuthView } from './components/LandingAuthView';
 import { MatchRoomView } from './components/MatchRoomView';
 import { PlayerCardsView } from './components/PlayerCardsView';
 import { PlayerRegistryView } from './components/PlayerRegistryView';
 import { PlayerStatsView } from './components/PlayerStatsView';
 import { SharedLineupView } from './components/SharedLineupView';
-import type { FinalizedLineup, HealthResponse, MatchRoom, Player } from './types';
+import { TrustWatchView } from './components/TrustWatchView';
+import type { AuthState, FinalizedLineup, HealthResponse, MatchRoom, Player } from './types';
 
-type Tab = 'dashboard' | 'room' | 'players' | 'stats' | 'cards';
+type Tab = 'landing' | 'dashboard' | 'room' | 'players' | 'stats' | 'cards' | 'trust';
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<Tab>('room');
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [auth, setAuth] = useState<AuthState>({ authenticated: false, mode: 'local_dev_host', user: null });
   const [players, setPlayers] = useState<Player[]>([]);
   const [rooms, setRooms] = useState<MatchRoom[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
@@ -28,8 +41,14 @@ export const App: React.FC = () => {
 
   const loadAll = async () => {
     try {
-      const [h, ps, rs] = await Promise.all([api.health(), api.listPlayers(), api.listRooms()]);
+      const [h, me, ps, rs] = await Promise.all([
+        api.health(),
+        api.authMe(),
+        api.listPlayers(),
+        api.listRooms(),
+      ]);
       setHealth(h);
+      setAuth(me);
       setPlayers(ps);
       setRooms(rs);
       if (rs.length > 0 && (!activeRoomId || !rs.some((r) => r.id === activeRoomId))) {
@@ -99,16 +118,33 @@ export const App: React.FC = () => {
     setPlayers(ps);
   };
 
+  const handleLogout = async () => {
+    try {
+      await api.authLogout();
+    } catch {
+      // ignore
+    }
+    setStoredToken(null);
+    setAuth({ authenticated: false, mode: 'local_dev_host', user: null });
+  };
+
   const activeRoom = rooms.find((r) => r.id === activeRoomId) || rooms[0] || null;
 
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand">
+        <div
+          className="brand"
+          style={{ cursor: 'pointer' }}
+          onClick={() => {
+            setSharedView(null);
+            setTab('landing');
+          }}
+        >
           <div className="brand-mark">SF</div>
           <div>
             <div className="brand-title">StackForge</div>
-            <div className="brand-sub">CS2 Private 5v5 Tactical Hub • Random Maps</div>
+            <div className="brand-sub">CS2 Private 5v5 Intelligence • Random Maps</div>
           </div>
         </div>
 
@@ -158,18 +194,42 @@ export const App: React.FC = () => {
           >
             <Award size={15} /> Player Cards
           </button>
+          <button
+            className={`nav-tab ${tab === 'trust' && !sharedView ? 'active' : ''}`}
+            onClick={() => {
+              setSharedView(null);
+              setTab('trust');
+            }}
+          >
+            <Shield size={15} /> Trust Watch
+          </button>
         </nav>
 
         <div className="topbar-meta">
           {health && (
             <>
-              <span className={`badge ${health.providers.steam === 'configured' ? 'badge-ok' : ''}`}>
-                Steam: {health.providers.steam === 'configured' ? 'Connected' : 'Not connected'}
+              <span className={`badge ${health.providers.leetify !== 'not_configured' ? 'badge-ok' : ''}`}>
+                Leetify: {health.providers.leetify === 'configured' ? 'Keyed' : 'Public'}
               </span>
-              <span className={`badge ${health.providers.faceit === 'configured' ? 'badge-ok' : ''}`}>
-                FACEIT: {health.providers.faceit === 'configured' ? 'Connected' : 'Not connected'}
+              <span className={`badge ${health.providers.steam === 'configured' ? 'badge-ok' : ''}`}>
+                Steam: {health.providers.steam === 'configured' ? 'Keyed' : 'Off'}
               </span>
             </>
+          )}
+          {auth.authenticated && auth.user ? (
+            <button className="btn btn-xs" onClick={handleLogout} title="Sign out">
+              <LogOut size={12} /> {auth.user.username}
+            </button>
+          ) : (
+            <button
+              className="btn btn-xs btn-primary"
+              onClick={() => {
+                setSharedView(null);
+                setTab('landing');
+              }}
+            >
+              <LogIn size={12} /> Account
+            </button>
           )}
         </div>
       </header>
@@ -196,6 +256,13 @@ export const App: React.FC = () => {
               setSharedView(null);
               window.history.replaceState({}, '', '/');
             }}
+          />
+        ) : tab === 'landing' ? (
+          <LandingAuthView
+            auth={auth}
+            onAuthChanged={setAuth}
+            onEnterApp={() => setTab('room')}
+            onError={setErrorMsg}
           />
         ) : tab === 'dashboard' ? (
           <DashboardView
@@ -233,6 +300,12 @@ export const App: React.FC = () => {
           <PlayerCardsView
             players={players}
             onRefreshPlayers={refreshPlayers}
+            onOpenProfile={handleOpenProfile}
+            onError={setErrorMsg}
+          />
+        ) : tab === 'trust' ? (
+          <TrustWatchView
+            players={players}
             onOpenProfile={handleOpenProfile}
             onError={setErrorMsg}
           />
@@ -281,7 +354,7 @@ export const App: React.FC = () => {
           <div className="card" style={{ textAlign: 'center', padding: '3rem 1.5rem', maxWidth: '640px', margin: '1rem auto' }}>
             <h2>Start Your CS2 5v5 Match Room</h2>
             <p className="muted" style={{ margin: '0.6rem auto 1.2rem' }}>
-              Create a match room, pick 10 players from your saved roster (or load 10 demo players),
+              Create a match room, pick 10 players from your saved roster (or import your Google Sheet),
               generate balanced teams across all 126 partitions, handle swaps/remakes, and copy the Discord lineup.
             </p>
             <form onSubmit={handleCreateRoom} className="row" style={{ justifyContent: 'center' }}>

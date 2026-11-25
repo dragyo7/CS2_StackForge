@@ -11,16 +11,22 @@ StackForge helps a community select ten CS2 players, assess available player dat
 - New players must be quickly resolved and preflight-checked without blocking the lobby on provider failures.
 - Trust data is evidence and status, not an automatic guilt verdict.
 
-## Current implemented state (MVP + Player Intelligence & CS2 Redesign)
+## Current implemented state (MVP + Intelligence, Spreadsheet Sync & Trust Evolution)
 Implemented and tested in `backend/` and `frontend/`:
-1. **Backwards-compatible SQLite schema & migrations** (`backend/app/migrations.py`): `communities`, `players`, `player_aliases`, `player_stat_snapshots`, `community_players`, `provider_snapshots`, `match_rooms`, `match_room_players`, `team_constraints`, `team_generations`, `generation_feedback`, `finalized_lineups`, `audit_events`.
-2. **Canonical SteamID64 identity & alias history**: Steam URL/ID parser, bulk import (`CREATED_STEAM`, `CREATED_MANUAL`, `DUPLICATE`, `UNRESOLVED`, `INVALID`), TTL-cached profile refresh (`POST /api/players/{id}/refresh`), append-only alias tracking, and searchable previous names.
-3. **Player profile & source-qualified stats**: `GET /api/players/{id}/profile`, `POST /api/players/{id}/stats`, `GET /api/players/compare`, missing metrics displayed as `Unavailable from this source`.
-4. **Evidence-based CS2 Player Cards (`card_rules_v1`)**: `PATCH /api/players/{id}/card-settings`, sample-gated humorous titles, hideable badges, intensity selector (`MILD`/`SPICY`/`SAVAGE`), tagline reroll, Discord card copy.
-5. **10-player Match Room & 126-partition optimizer**: exhaustive deterministic optimization (`stackforge_126_v1` + `norm_v1` + hidden `active_duty_v1`), alternatives, swap preview/commit, locks, pair constraints, regenerate with repeat-avoidance, objections, proposal restore, finalize, and Discord/shareable lineup.
-6. **CS2 tactical frontend**: **Dashboard**, **Match Room**, **Players**, **Player Stats**, **Player Cards**, and **Shared Lineup** views.
+1. **Backwards-compatible SQLite schema & migrations** (`backend/app/migrations.py`): `communities`, `users`, `user_sessions`, `players`, `player_aliases`, `player_external_identities`, `player_stat_snapshots`, `player_match_records`, `spreadsheet_imports`, `spreadsheet_import_rows`, `watchlist_entries`, `trust_signals`, `activity_events`, `community_players`, `provider_snapshots`, `match_rooms`, `match_room_players`, `team_constraints`, `team_generations`, `generation_feedback`, `finalized_lineups`, `audit_events`.
+2. **Community Google Sheet / CSV / XLSX Import & Sync**: preview, column mapping, duplicate/conflict detection, safe re-import preserving manual edits, and `Sync Now` (`backend/app/services/import_service.py`).
+3. **Universal Identity Resolution & Alias History**: resolves SteamID64, Steam `/profiles/` & `/id/`, CSStats, Leetify, CSWatch, FACEIT, and nickname candidates with `VERIFIED`/`CANDIDATE`/`UNRESOLVED` confidence, cross-provider discovery, and append-only alias tracking.
+4. **Live Keyless CS2 Data (`Leetify v3` & `CSWatch`) + Keyed Adapters (`Steam`, `FACEIT`)**: extracts real Premier/Leetify/FACEIT ELO ratings, recent 10 & lifetime combat metrics, match history, avatars, and hidden map deltas without scraping.
+5. **Trust & Account Watch**: separated `OFFICIAL_ENFORCEMENT`, `THIRD_PARTY_REPUTATION`, `COMMUNITY_REPORT`, and `HUMAN_REVIEW` signals, private watchlist review/dismiss, and deduplicated activity feed.
+6. **10-player Match Room & CS2-Native Explanations**: 126-partition deterministic optimizer with shared Registry/Optimizer normalization (`build_player_input`), explicit `recent` (recent form/ADR) and `lifetime` (opening duels/trading/clutch/consistency) snapshot priority, CS2-native matchup notes, alternatives, swaps, locks, regeneration, restoration, finalize, and Discord share.
+7. **Pre-Match Refresh & Roster Safety Warnings**: Match Room `Refresh Status` delegates to `refresh_player_profile` (Steam, Leetify profile/stats/matches, CSWatch, FACEIT when keyed, TTL cache + 429 retry + cached preservation), renders a per-player/per-provider report, and displays compact informational warnings (`CSWatch`, `Watchlist`, `Unverified ID`, `Stale Stats`, provider unavailable) without altering skill ratings.
+8. **Auth Foundation & Tactical UI**: Landing/Sign-Up/Login/Logout (`PBKDF2-HMAC-SHA256`), `Dashboard`, `Match Room`, `Players` (with Sheet Import & Universal Resolver), `Player Stats` (Profile, Match History & Compare), `Player Cards`, and `Trust Watch`.
 
-**Known limitations:** Steam/FACEIT/Leetify adapters are implemented and unit-tested for unconfigured fallback, but live API calls remain untested until API keys are configured in `backend/.env`. Multi-user authentication (Steam OpenID), multi-tenant RBAC, Watchtower background polling, and demo `.dem` parsing remain deferred.
+**Current live status & planned/deferred items:**
+- **Active live without keys:** Steam Community XML (`?xml=1`), Leetify Public CS API v3 (`429` retry/backoff), CSWatch Public JSON API (25/min cap), and Google Sheets CSV export (`14` unique players verified in `backend/stackforge.db`).
+- **Pending API keys (`NOT_CONFIGURED`):** `STEAM_API_KEY` (official `GetPlayerBans` enforcement checks) and `FACEIT_API_KEY` (FACEIT Data API v4 stats/ELO).
+- **Not implemented / prohibited scraping:** No scrapers or adapters exist for `csstats.gg` (link & SteamID64 extraction only), `tracker.gg`, `faceitanalyser.com`, or `trustfactor.gg`.
+- **Planned next:** Multi-community isolation/RBAC UI, Steam OpenID login, automated background Trust Watch check scheduling with keys enabled, and optional offline `.dem` replay ingestion (`awpy`/`demoparser2`).
 
 ## Source-of-truth docs
 - `../Userflow.md`: user journeys.

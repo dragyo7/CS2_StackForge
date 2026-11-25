@@ -11,6 +11,149 @@ export interface ProviderStatus {
   fetched_at: string | null;
 }
 
+export interface ExternalIdentity {
+  id: string;
+  provider: string;
+  external_id: string;
+  profile_url: string | null;
+  verification_state: string;
+  confidence: number;
+}
+
+export interface MatchRecord {
+  id: string;
+  provider: string;
+  external_match_id: string;
+  map_name: string | null;
+  game_mode: string | null;
+  outcome: string | null;
+  score_text: string | null;
+  kd_ratio: number | null;
+  adr: number | null;
+  hs_pct: number | null;
+  leetify_rating: number | null;
+  source_url: string | null;
+  played_at: string;
+}
+
+export interface AuthState {
+  authenticated: boolean;
+  mode: string;
+  user: {
+    id: string;
+    email: string;
+    username: string;
+    role: string;
+    linked_steam_id64: string | null;
+  } | null;
+}
+
+export interface ResolveIdentityResponse {
+  raw_input: string;
+  identifier_type: string;
+  confidence_state: 'VERIFIED' | 'CANDIDATE' | 'UNRESOLVED';
+  resolved_steam_id64: string | null;
+  message: string;
+  matched_existing: {
+    community_player_id: string;
+    display_name: string;
+    steam_id64: string | null;
+    match_reason: string;
+    confidence_state: string;
+  }[];
+  provider_discoveries: {
+    provider: string;
+    status: string;
+    summary: string;
+    external_id: string | null;
+    profile_url: string | null;
+    persona_name?: string | null;
+    avatar_url?: string | null;
+    premier_rating?: number | null;
+    leetify_rating?: number | null;
+    faceit_elo?: number | null;
+    reputation_score?: number | null;
+    risk_level?: string | null;
+  }[];
+}
+
+export interface SpreadsheetPreview {
+  headers: string[];
+  mapping: Record<string, string | null>;
+  content_hash: string;
+  total_rows: number;
+  counts: Record<string, number>;
+  source_url?: string;
+  rows: {
+    row_number: number;
+    raw: Record<string, string>;
+    normalized: {
+      display_name: string;
+      real_name: string;
+      steam_id64: string | null;
+      source_provider: string | null;
+      source_url: string | null;
+      manual_rating: number;
+      primary_role: string | null;
+      notes: string | null;
+    };
+    status: string;
+    message: string;
+    matched_community_player_id: string | null;
+    matched_display_name: string | null;
+  }[];
+}
+
+export interface ImportHistoryItem {
+  id: string;
+  source_type: string;
+  source_label: string;
+  source_url: string | null;
+  content_hash: string;
+  summary: Record<string, number>;
+  sync_status: string;
+  last_attempted_sync_at: string;
+  last_successful_sync_at: string | null;
+}
+
+export interface TrustOverview {
+  watchlist: {
+    id: string;
+    player_id: string;
+    community_player_id: string | null;
+    display_name: string;
+    steam_id64: string | null;
+    status: string;
+    reason: string;
+    source_url: string | null;
+    review_note: string | null;
+    reviewed_by: string | null;
+    created_at: string;
+    updated_at: string;
+  }[];
+  signals: {
+    id: string;
+    player_id: string;
+    community_player_id: string | null;
+    display_name: string;
+    category: string;
+    provider: string;
+    status: string;
+    summary: string;
+    limitations: string | null;
+    source_url: string | null;
+    observed_at: string;
+  }[];
+  activity: {
+    id: string;
+    event_type: string;
+    player_id: string | null;
+    title: string;
+    detail: string;
+    created_at: string;
+  }[];
+}
+
 export interface AliasItem {
   id: string;
   alias_name: string;
@@ -53,6 +196,15 @@ export interface PlayerCardBadge {
   hidden: boolean;
 }
 
+export interface TrustSummary {
+  cswatch_status: string | null;
+  cswatch_risk_level: string | null;
+  cswatch_reputation_score: number | null;
+  cswatch_summary: string | null;
+  watchlist_status: string | null;
+  watchlist_reason: string | null;
+}
+
 export interface PlayerCard {
   rules_version: string;
   humour_enabled: boolean;
@@ -93,13 +245,17 @@ export interface Player {
   secondary_role: RoleType | null;
   notes: string | null;
   is_seeded: boolean;
+  is_archived?: boolean;
+  stats_stale?: boolean;
   normalized_strength: number;
   confidence: number;
   strength_band: string;
   missing_sources: string[];
   provider_statuses: ProviderStatus[];
   aliases: AliasItem[];
+  external_identities: ExternalIdentity[];
   latest_stats: StatSnapshot | null;
+  trust_summary?: TrustSummary | null;
   card: PlayerCard | null;
   created_at: string;
   updated_at: string;
@@ -109,6 +265,8 @@ export interface PlayerProfile {
   player: Player;
   stat_snapshots: StatSnapshot[];
   aliases: AliasItem[];
+  external_identities: ExternalIdentity[];
+  match_records: MatchRecord[];
   provider_statuses: ProviderStatus[];
   card: PlayerCard;
 }
@@ -218,13 +376,30 @@ export interface Proposal {
   objective_components: Record<string, number>;
   explanation: {
     balance_indicator: string;
+    matchup_label?: string;
     summary: string;
+    good_match_summary?: string;
+    team_a_notes?: string[];
+    team_b_notes?: string[];
+    share_summary?: string;
     avg_confidence: number;
+    data_coverage_pct?: number;
     confidence_label: string;
     manual_only_count: number;
     manual_only_players: string[];
+    stale_count?: number;
     unverified_identity_players: string[];
     role_notes: string[];
+    player_contributions?: string[];
+    recent_form_summary?: string;
+    trade_offs?: string[];
+    alternative_comparisons?: {
+      partition_key: string;
+      strength_diff: number;
+      strength_diff_delta: number;
+      moved_players: string;
+      trade_off: string;
+    }[];
     constraints_honored: string[];
     alternatives_found: number;
     map_policy_note: string;
@@ -295,6 +470,7 @@ export interface HealthResponse {
     steam: string;
     faceit: string;
     leetify: string;
+    cswatch?: string;
   };
   map_policy: string;
 }

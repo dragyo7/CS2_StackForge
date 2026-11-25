@@ -68,6 +68,168 @@ class Player(Base):
     stat_snapshots: Mapped[list["PlayerStatSnapshot"]] = relationship(
         back_populates="player", cascade="all, delete-orphan", order_by="PlayerStatSnapshot.captured_at.desc()"
     )
+    external_identities: Mapped[list["PlayerExternalIdentity"]] = relationship(
+        back_populates="player", cascade="all, delete-orphan"
+    )
+    match_records: Mapped[list["PlayerMatchRecord"]] = relationship(
+        back_populates="player", cascade="all, delete-orphan", order_by="PlayerMatchRecord.played_at.desc()"
+    )
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    email: Mapped[str] = mapped_column(String(200), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(80), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    role: Mapped[str] = mapped_column(String(24), default="HOST", nullable=False)
+    linked_steam_id64: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped["User"] = relationship()
+
+
+class PlayerExternalIdentity(Base):
+    """Canonical mapping between a global Player and external CS2 provider IDs."""
+
+    __tablename__ = "player_external_identities"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_id", name="uq_provider_external_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)  # steam | faceit | leetify | csstats | cswatch
+    external_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    profile_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    verification_state: Mapped[str] = mapped_column(String(24), default="VERIFIED", nullable=False)  # VERIFIED | CANDIDATE | UNRESOLVED
+    confidence: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    player: Mapped["Player"] = relationship(back_populates="external_identities")
+
+
+class PlayerMatchRecord(Base):
+    """Deduplicated external or private 5v5 match history for trend and form tracking."""
+
+    __tablename__ = "player_match_records"
+    __table_args__ = (
+        UniqueConstraint("player_id", "provider", "external_match_id", name="uq_player_provider_match"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_match_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    map_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    game_mode: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(24), nullable=True)  # win | loss | tie
+    score_text: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    kd_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    adr: Mapped[float | None] = mapped_column(Float, nullable=True)
+    hs_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    leetify_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    played_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    player: Mapped["Player"] = relationship(back_populates="match_records")
+
+
+class SpreadsheetImport(Base):
+    __tablename__ = "spreadsheet_imports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)  # GOOGLE_SHEET | CSV | XLSX
+    source_label: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    mapping_json: Mapped[str] = mapped_column(Text, nullable=False)
+    summary_json: Mapped[str] = mapped_column(Text, nullable=False)
+    sync_status: Mapped[str] = mapped_column(String(24), default="OK", nullable=False)
+    last_attempted_sync_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_successful_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    rows: Mapped[list["SpreadsheetImportRow"]] = relationship(
+        back_populates="import_job", cascade="all, delete-orphan"
+    )
+
+
+class SpreadsheetImportRow(Base):
+    __tablename__ = "spreadsheet_import_rows"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    import_id: Mapped[str] = mapped_column(ForeignKey("spreadsheet_imports.id", ondelete="CASCADE"), nullable=False, index=True)
+    row_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # CREATED | UPDATED | MATCHED | DUPLICATE | UNRESOLVED | INVALID
+    matched_community_player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    extracted_steam_id64: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    message: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    import_job: Mapped["SpreadsheetImport"] = relationship(back_populates="rows")
+
+
+class WatchlistEntry(Base):
+    __tablename__ = "watchlist_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), default="WATCHING", nullable=False)  # WATCHING | REVIEWED | DISMISSED
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    player: Mapped["Player"] = relationship()
+
+
+class TrustSignal(Base):
+    """Separated evidence records: official enforcement, 3rd-party reputation, community report, human review."""
+
+    __tablename__ = "trust_signals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)  # OFFICIAL_ENFORCEMENT | THIRD_PARTY_REPUTATION | BEHAVIORAL_ANOMALY | COMMUNITY_REPORT | HUMAN_REVIEW
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # OK | FLAGGED | UNAVAILABLE | PENDING_REVIEW | DISMISSED
+    summary: Mapped[str] = mapped_column(String(400), nullable=False)
+    limitations: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ActivityEvent(Base):
+    __tablename__ = "activity_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    player_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    dedup_key: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class PlayerAlias(Base):
@@ -152,6 +314,7 @@ class CommunityPlayer(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_seeded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Player Card & Humour Controls
     humour_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

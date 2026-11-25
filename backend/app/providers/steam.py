@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import httpx
@@ -9,22 +10,55 @@ from app.providers.base import ProviderResult
 
 
 class SteamProvider:
-    """Server-side Steam Web API adapter with bounded timeouts and non-blocking failure."""
+    """
+    Server-side Steam adapter:
+    - Uses Steam Web API (`STEAM_API_KEY`) when configured.
+    - Falls back to Valve's public read-only Steam Community XML feed (`?xml=1`)
+      for vanity resolution and public persona/avatar summaries when no key is configured.
+    - Never fakes GetPlayerBans when `STEAM_API_KEY` is absent (`NOT_CONFIGURED`).
+    """
 
     BASE_URL = "https://api.steampowered.com"
+    COMMUNITY_URL = "https://steamcommunity.com"
 
-    def __init__(self, api_key: str | None = None, timeout: float | None = None):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout: float | None = None,
+        use_public_xml: bool = True,
+    ):
         settings = get_settings()
         self.api_key = api_key if api_key is not None else settings.steam_api_key
-        self.timeout = timeout if timeout is not None else settings.provider_timeout_seconds
+        self.timeout = timeout if timeout is not None else max(settings.provider_timeout_seconds, 6.0)
+        self.use_public_xml = use_public_xml
 
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    async def _resolve_vanity_xml(self, vanity_name: str) -> tuple[str | None, str]:
+        if not self.use_public_xml:
+            return None, "NOT_CONFIGURED"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                resp = await client.get(f"{self.COMMUNITY_URL}/id/{vanity_name}/?xml=1")
+            if resp.status_code == 404:
+                return None, "NOT_FOUND"
+            if resp.status_code != 200:
+                return None, "UNAVAILABLE"
+            root = ET.fromstring(resp.text)
+            if root.findtext("error"):
+                return None, "NOT_FOUND"
+            sid = (root.findtext("steamID64") or "").strip()
+            if sid and sid.isdigit() and len(sid) == 17:
+                return sid, "OK"
+            return None, "NOT_FOUND"
+        except Exception:
+            return None, "UNAVAILABLE"
+
     async def resolve_vanity_url(self, vanity_name: str) -> tuple[str | None, str]:
         if not self.api_key:
-            return None, "NOT_CONFIGURED"
+            return await self._resolve_vanity_xml(vanity_name)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.get(
@@ -32,26 +66,74 @@ class SteamProvider:
                     params={"key": self.api_key, "vanityurl": vanity_name},
                 )
             if resp.status_code != 200:
-                return None, "UNAVAILABLE"
+                return await self._resolve_vanity_xml(vanity_name)
             payload = resp.json().get("response", {})
             if payload.get("success") == 1 and payload.get("steamid"):
                 return str(payload["steamid"]), "OK"
             return None, "NOT_FOUND"
         except Exception:
-            return None, "UNAVAILABLE"
+            return await self._resolve_vanity_xml(vanity_name)
+
+    async def _fetch_summary_xml(self, steam_id64: str) -> ProviderResult:
+        if not self.use_public_xml:
+            return ProviderResult(
+                provider="steam_profile",
+                status="NOT_CONFIGURED",
+                summary="Steam API key not configured (manual/cached mode active).",
+            )
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                resp = await client.get(f"{self.COMMUNITY_URL}/profiles/{steam_id64}/?xml=1")
+            if resp.status_code == 404:
+                return ProviderResult(
+                    provider="steam_profile",
+                    status="NOT_FOUND",
+                    summary="Steam profile not found for SteamID64.",
+                )
+            if resp.status_code != 200:
+                return ProviderResult(
+                    provider="steam_profile",
+                    status="UNAVAILABLE",
+                    summary=f"Steam public XML unavailable (HTTP {resp.status_code}).",
+                )
+            root = ET.fromstring(resp.text)
+            if root.findtext("error"):
+                return ProviderResult(
+                    provider="steam_profile",
+                    status="NOT_FOUND",
+                    summary="Steam profile not found.",
+                )
+            persona = root.findtext("steamID")
+            avatar = root.findtext("avatarFull") or root.findtext("avatarMedium")
+            priv = (root.findtext("privacyState") or "").strip().lower()
+            vis_label = "Public" if priv == "public" else ("Private/FriendsOnly" if priv else "Unknown")
+            return ProviderResult(
+                provider="steam_profile",
+                status="OK",
+                summary=f"{persona or 'Steam User'} ({vis_label} via public Steam XML)",
+                data={
+                    "persona_name": persona,
+                    "avatar_url": avatar,
+                    "profile_url": f"https://steamcommunity.com/profiles/{steam_id64}",
+                    "visibility": vis_label,
+                    "source": "steam_community_xml",
+                },
+            )
+        except Exception:
+            return ProviderResult(
+                provider="steam_profile",
+                status="UNAVAILABLE",
+                summary="Steam public XML request timed out or failed.",
+            )
 
     async def fetch_summaries(self, steam_ids: list[str]) -> dict[str, ProviderResult]:
         if not steam_ids:
             return {}
         if not self.api_key:
-            return {
-                sid: ProviderResult(
-                    provider="steam_profile",
-                    status="NOT_CONFIGURED",
-                    summary="Steam API key not configured (manual/cached mode active).",
-                )
-                for sid in steam_ids
-            }
+            results: dict[str, ProviderResult] = {}
+            for sid in steam_ids:
+                results[sid] = await self._fetch_summary_xml(sid)
+            return results
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.get(
@@ -69,7 +151,7 @@ class SteamProvider:
                 }
             players = resp.json().get("response", {}).get("players", [])
             by_id = {str(p.get("steamid")): p for p in players if p.get("steamid")}
-            results: dict[str, ProviderResult] = {}
+            results = {}
             for sid in steam_ids:
                 p = by_id.get(sid)
                 if not p:
@@ -90,6 +172,7 @@ class SteamProvider:
                             "avatar_url": p.get("avatarfull") or p.get("avatarmedium"),
                             "profile_url": p.get("profileurl"),
                             "visibility": vis_label,
+                            "source": "steam_web_api",
                         },
                     )
             return results
@@ -105,8 +188,8 @@ class SteamProvider:
 
     async def fetch_bans(self, steam_ids: list[str]) -> dict[str, ProviderResult]:
         """
-        Fetches Steam ban fields. Never labels an account 'clean',
-        and never claims a generic game ban count is a CS2 cheat conviction.
+        Fetches Steam ban fields via official GetPlayerBans when STEAM_API_KEY is configured.
+        Never fabricates ban check status when unconfigured.
         """
         if not steam_ids:
             return {}
@@ -115,7 +198,7 @@ class SteamProvider:
                 sid: ProviderResult(
                     provider="steam_bans",
                     status="NOT_CONFIGURED",
-                    summary="Steam API key not configured; ban status not checked.",
+                    summary="Steam API key not configured; official GetPlayerBans not checked.",
                 )
                 for sid in steam_ids
             }

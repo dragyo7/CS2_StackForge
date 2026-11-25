@@ -454,6 +454,19 @@ export const PlayerStatsView: React.FC<Props> = ({
                         <ExternalLink size={13} /> Steam
                       </a>
                     )}
+                    {profile.external_identities.map((ext) =>
+                      ext.profile_url ? (
+                        <a
+                          key={ext.id}
+                          className="btn btn-sm"
+                          href={ext.profile_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink size={13} /> {ext.provider}
+                        </a>
+                      ) : null,
+                    )}
                     <button className="btn btn-sm" disabled={busy} onClick={() => handleRefreshProfile(false)}>
                       <RefreshCw size={13} /> Refresh
                     </button>
@@ -508,7 +521,7 @@ export const PlayerStatsView: React.FC<Props> = ({
                     <span className="small muted">Leetify / Manual</span>
                     <strong className="mono">
                       {profile.player.leetify_rating != null
-                        ? `${profile.player.leetify_rating >= 0 ? '+' : ''}${profile.player.leetify_rating}`
+                        ? `${profile.player.leetify_rating >= 0 ? '+' : ''}${profile.player.leetify_rating.toFixed(2)}`
                         : `Manual ${profile.player.manual_rating}`}
                     </strong>
                     <span className="small muted">Manual baseline: {profile.player.manual_rating}</span>
@@ -735,6 +748,47 @@ export const PlayerStatsView: React.FC<Props> = ({
                             );
                           })}
                         </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Recent External / Community Match History */}
+              <div className="card">
+                <h4 style={{ marginBottom: '0.55rem' }}>
+                  Recent Match History ({profile.match_records.length})
+                </h4>
+                {profile.match_records.length === 0 ? (
+                  <p className="muted small" style={{ margin: 0 }}>
+                    No match history synced yet. Click Refresh on a linked SteamID64 to fetch public Leetify matches.
+                  </p>
+                ) : (
+                  <div className="stack" style={{ gap: '0.35rem', maxHeight: '260px', overflowY: 'auto' }}>
+                    {profile.match_records.map((m) => (
+                      <div key={m.id} className="player-row" style={{ padding: '0.45rem 0.65rem' }}>
+                        <div>
+                          <div className="row" style={{ gap: '0.35rem' }}>
+                            <strong className="small">{m.map_name || 'Unknown map'}</strong>
+                            {m.outcome && (
+                              <span className={`badge ${m.outcome === 'win' ? 'badge-ok' : m.outcome === 'loss' ? 'badge-danger' : ''}`}>
+                                {m.outcome.toUpperCase()} {m.score_text || ''}
+                              </span>
+                            )}
+                            <span className="badge">{m.provider}</span>
+                          </div>
+                          <div className="small muted mono">
+                            ADR {m.adr != null ? m.adr.toFixed(1) : '—'} • K/D{' '}
+                            {m.kd_ratio != null ? m.kd_ratio.toFixed(2) : '—'} • HS%{' '}
+                            {m.hs_pct != null ? `${m.hs_pct.toFixed(0)}%` : '—'} •{' '}
+                            {new Date(m.played_at).toLocaleDateString()}
+                          </div>
+                        </div>
+                        {m.source_url && (
+                          <a className="btn btn-xs" href={m.source_url} target="_blank" rel="noreferrer">
+                            Match
+                          </a>
+                        )}
                       </div>
                     ))}
                   </div>

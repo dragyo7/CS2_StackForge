@@ -15,6 +15,7 @@ from app.models import (
     GenerationFeedback,
     MatchRoom,
     MatchRoomPlayer,
+    PlayerStatSnapshot,
     TeamConstraint,
     TeamGeneration,
 )
@@ -45,7 +46,7 @@ from app.schemas import (
     SwapPreviewRequest,
     SwapPreviewResponse,
 )
-from app.services.player_service import to_player_out
+from app.services.player_service import build_player_input, to_player_out
 
 
 def _load_room(db: Session, community_id: str, room_id: str) -> MatchRoom:
@@ -333,37 +334,17 @@ def remove_pair_constraint(db: Session, community_id: str, room_id: str, constra
     return to_room_out(db, _load_room(db, community_id, room.id))
 
 
-def _build_player_inputs(room: MatchRoom) -> tuple[list[PlayerInput], TeamConstraints, list[dict]]:
+def _build_player_inputs(db: Session, room: MatchRoom) -> tuple[list[PlayerInput], TeamConstraints, list[dict]]:
     inputs: list[PlayerInput] = []
     snapshot: list[dict] = []
     locked_a: set[str] = set()
     locked_b: set[str] = set()
+    now = datetime.now(timezone.utc)
 
     for entry in sorted(room.roster_entries, key=lambda r: r.slot_order):
         cp = entry.community_player
         p = cp.player
-        map_ratings: dict[str, float] = {}
-        if cp.map_ratings_json:
-            try:
-                map_ratings = json.loads(cp.map_ratings_json)
-            except json.JSONDecodeError:
-                map_ratings = {}
-        pin = PlayerInput(
-            community_player_id=cp.id,
-            display_name=cp.display_name,
-            steam_id64=p.steam_id64,
-            identity_status=p.identity_status,
-            manual_rating=cp.manual_rating,
-            premier_rating=cp.premier_rating,
-            premier_source=cp.premier_source,
-            premier_season=cp.premier_season,
-            faceit_elo=cp.faceit_elo,
-            leetify_rating=cp.leetify_rating,
-            recent_form=cp.recent_form,
-            primary_role=cp.primary_role,
-            secondary_role=cp.secondary_role,
-            map_ratings=map_ratings,
-        )
+        pin, eff = build_player_input(db, cp)
         inputs.append(pin)
         norm = normalize_player(pin)
         snapshot.append(
@@ -383,6 +364,16 @@ def _build_player_inputs(room: MatchRoom) -> tuple[list[PlayerInput], TeamConstr
                 "confidence": norm.confidence,
                 "sources_used": norm.sources_used,
                 "missing_sources": norm.missing_sources,
+                "adr": eff["adr"],
+                "kd_ratio": eff["kd_ratio"],
+                "kast": eff["kast"],
+                "opening_duel_pct": eff["opening_duel_pct"],
+                "trade_kills_per_match": eff["trade_kills_per_match"],
+                "clutch_win_pct": eff["clutch_win_pct"],
+                "consistency_score": eff["consistency_score"],
+                "win_rate": eff["win_rate"],
+                "stats_sample_size": eff["stats_sample_size"],
+                "stats_stale": eff["stats_stale"],
                 "locked_team": entry.locked_team,
             }
         )
@@ -428,7 +419,7 @@ def generate_proposal(
             detail=f"Exactly 10 unique players are required to generate teams (currently {len(room.roster_entries)}/10).",
         )
 
-    inputs, constraints, input_snapshot = _build_player_inputs(room)
+    inputs, constraints, input_snapshot = _build_player_inputs(db, room)
     exclude_keys: set[str] = set()
     if is_regenerate and not force_cycle:
         exclude_keys = {p.partition_key for p in room.proposals}
@@ -785,6 +776,7 @@ def _format_discord_text(
     team_b_strength: float,
     strength_diff: float,
     balance_indicator: str,
+    share_summary: str | None = None,
 ) -> str:
     def fmt_player(p: dict) -> str:
         role = f" [{p['primary_role']}]" if p.get("primary_role") else ""
@@ -802,6 +794,8 @@ def _format_discord_text(
         "",
         f"Balance: {balance_indicator} | Strength Diff: {strength_diff:.2f}",
     ]
+    if share_summary:
+        lines.append(f"Summary: {share_summary}")
     return "\n".join(lines)
 
 
@@ -829,6 +823,7 @@ def finalize_room(db: Session, community_id: str, room_id: str, req: FinalizeReq
         team_b_strength=gen.team_b_strength,
         strength_diff=gen.strength_diff,
         balance_indicator=explanation.get("balance_indicator", "Balanced"),
+        share_summary=explanation.get("share_summary"),
     )
 
     lineup_snap = {

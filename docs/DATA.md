@@ -7,7 +7,13 @@
 - `provider_snapshots`: append-only raw provider status/payload observations (`steam_profile`, `steam_bans`, `faceit`, `leetify`).
 - `communities`: tenant (`Main CS2 Stack` default).
 - `community_players`: tenant-specific `display_name`, `manual_rating`, `premier_rating` (+ source/season), `faceit_elo`, `leetify_rating`, `recent_form`, roles, `notes`, `is_seeded`, and card/visibility controls (`humour_enabled`, `humour_intensity`, `hidden_badges_json`, `card_tagline_variant`, `stats_visibility`).
-- Planned/deferred auth tables: `users`, `auth_identities`, `community_memberships`, `external_identities`.
+- `player_external_identities`: canonical cross-provider mappings (`steam`, `csstats`, `leetify`, `faceit`, `cswatch`) with `verification_state` (`VERIFIED` | `CANDIDATE` | `UNRESOLVED`) and confidence.
+- `player_match_records`: deduplicated external/private match history (`provider`, `external_match_id`, `map_name`, `outcome`, `score_text`, `kd_ratio`, `adr`, `hs_pct`, `leetify_rating`, `played_at`).
+- `spreadsheet_imports` & `spreadsheet_import_rows`: Google Sheet / CSV / XLSX import provenance, `content_hash`, column mapping, sync timestamps, and per-row original JSON.
+- `watchlist_entries` & `trust_signals`: separated evidence classes (`OFFICIAL_ENFORCEMENT`, `THIRD_PARTY_REPUTATION`, `BEHAVIORAL_ANOMALY`, `COMMUNITY_REPORT`, `HUMAN_REVIEW`).
+- `activity_events`: deduplicated in-app community notifications.
+- `users` & `user_sessions`: PBKDF2-HMAC-SHA256 hashed credentials and SHA-256 hashed session tokens.
+- Planned/deferred auth tables: `auth_identities`, `community_memberships`.
 
 ## Match-room model
 - `match_rooms`: room status, host, community, version.

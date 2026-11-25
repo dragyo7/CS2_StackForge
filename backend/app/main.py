@@ -8,8 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.migrations import run_migrations
+from app.providers.cswatch import CSWatchProvider
 from app.providers.external import FaceitProvider, LeetifyProvider
 from app.providers.steam import SteamProvider
+from app.routes.platform import router as platform_router
 from app.routes.players import router as players_router
 from app.routes.rooms import router as rooms_router
 from app.services.player_service import get_or_create_default_community
@@ -45,6 +47,7 @@ app.add_middleware(
 
 app.include_router(players_router)
 app.include_router(rooms_router)
+app.include_router(platform_router)
 
 
 @app.get("/api/health")
@@ -54,7 +57,8 @@ def health():
         "providers": {
             "steam": "configured" if SteamProvider().is_configured else "not_configured",
             "faceit": "configured" if FaceitProvider().is_configured else "not_configured",
-            "leetify": "configured" if LeetifyProvider().is_configured else "not_configured",
+            "leetify": "keyless_public_ready" if not LeetifyProvider().api_key else "configured",
+            "cswatch": "public_ready",
         },
         "map_policy": "random_no_picker",
     }
