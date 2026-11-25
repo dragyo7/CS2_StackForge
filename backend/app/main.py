@@ -1,0 +1,60 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import get_settings
+from app.database import SessionLocal, engine
+from app.migrations import run_migrations
+from app.providers.external import FaceitProvider, LeetifyProvider
+from app.providers.steam import SteamProvider
+from app.routes.players import router as players_router
+from app.routes.rooms import router as rooms_router
+from app.services.player_service import get_or_create_default_community
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    run_migrations(engine)
+    db = SessionLocal()
+    try:
+        get_or_create_default_community(db)
+    finally:
+        db.close()
+    yield
+
+
+settings = get_settings()
+
+app = FastAPI(
+    title="StackForge API",
+    version="0.1.0",
+    description="Private CS2 5v5 match organizer and deterministic 126-partition team balancer.",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(players_router)
+app.include_router(rooms_router)
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "providers": {
+            "steam": "configured" if SteamProvider().is_configured else "not_configured",
+            "faceit": "configured" if FaceitProvider().is_configured else "not_configured",
+            "leetify": "configured" if LeetifyProvider().is_configured else "not_configured",
+        },
+        "map_policy": "random_no_picker",
+    }

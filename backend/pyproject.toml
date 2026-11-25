@@ -1,0 +1,17 @@
+[project]
+name = "stackforge-backend"
+version = "0.1.0"
+description = "StackForge CS2 5v5 private match organizer and deterministic team balancer"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "sqlalchemy>=2.0.35",
+    "pydantic>=2.9.0",
+    "httpx>=0.27.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+]
