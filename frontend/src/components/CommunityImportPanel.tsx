@@ -262,7 +262,7 @@ export const CommunityImportPanel: React.FC<Props> = ({
             </div>
 
             <div className="form-grid" style={{ marginBottom: '0.75rem' }}>
-              {(['display_name', 'real_name', 'identity_url', 'steam_id64', 'manual_rating', 'primary_role'] as const).map((field) => (
+              {(['display_name', 'real_name', 'identity_url', 'steam_id64', 'primary_role', 'premier_rating', 'faceit_elo', 'notes'] as const).map((field) => (
                 <div key={field}>
                   <label className="field-label">{field}</label>
                   <select

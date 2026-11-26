@@ -92,8 +92,16 @@ export const MatchRoomView: React.FC<Props> = ({
   const [quickError, setQuickError] = useState<string | null>(null);
   const [showDetailedStats, setShowDetailedStats] = useState(false);
 
+  // Post-match result pipeline state
+  const [resMap, setResMap] = useState(room.result?.map_played || 'de_mirage');
+  const [resScoreA, setResScoreA] = useState(String(room.result?.team_a_score ?? 13));
+  const [resScoreB, setResScoreB] = useState(String(room.result?.team_b_score ?? 9));
+  const [resExternalUrl, setResExternalUrl] = useState(room.result?.external_match_url || '');
+  const [resNotes, setResNotes] = useState(room.result?.notes || '');
+
   const activeProposal: Proposal | null = room.proposals[0] || null;
-  const isFinalized = room.status === 'FINALIZED';
+  const isFinalized = ['FINALIZED', 'PLAYED', 'RESULT_RECORDED', 'ANALYZED'].includes(room.status);
+  const canReopen = room.status === 'FINALIZED' || room.status === 'PLAYED';
 
   useEffect(() => {
     setSwapPickA(null);
@@ -494,6 +502,43 @@ export const MatchRoomView: React.FC<Props> = ({
       onRoomUpdated(updated);
     } catch (err) {
       onError(err instanceof ApiError ? err.message : 'Could not reopen room.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMarkPlayed = async () => {
+    setBusy(true);
+    try {
+      const updated = await api.markRoomPlayed(room.id);
+      onRoomUpdated(updated);
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not update match lifecycle.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRecordResult = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const aNum = Number.parseInt(resScoreA, 10);
+    const bNum = Number.parseInt(resScoreB, 10);
+    if (Number.isNaN(aNum) || Number.isNaN(bNum) || aNum < 0 || bNum < 0) {
+      onError('Enter valid non-negative round scores for Team A and Team B.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.recordRoomResult(room.id, {
+        map_played: resMap,
+        team_a_score: aNum,
+        team_b_score: bNum,
+        external_match_url: resExternalUrl.trim() || null,
+        notes: resNotes.trim() || null,
+      });
+      onRoomUpdated(updated);
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Could not save post-match result.');
     } finally {
       setBusy(false);
     }
@@ -1037,7 +1082,7 @@ export const MatchRoomView: React.FC<Props> = ({
                 <ShieldCheck size={15} /> Finalize Teams (#{activeProposal.proposal_number})
               </button>
             )}
-            {isFinalized && (
+            {canReopen && (
               <button className="btn" disabled={busy} onClick={handleReopen}>
                 <RotateCcw size={15} /> Reopen Room
               </button>
@@ -1104,6 +1149,73 @@ export const MatchRoomView: React.FC<Props> = ({
             >
               {room.finalized_lineup.discord_text}
             </pre>
+
+            {/* Post-Match Lifecycle & Result Pipeline */}
+            <div style={{ marginTop: '0.9rem', paddingTop: '0.85rem', borderTop: '1px solid var(--border)' }}>
+              <div className="row" style={{ justifyContent: 'space-between', marginBottom: '0.55rem' }}>
+                <div className="row">
+                  <strong className="small">Match Lifecycle:</strong>
+                  <span className="badge badge-ok">{room.status}</span>
+                  {room.result && (
+                    <span className="badge badge-a mono">
+                      {room.result.map_played} • A {room.result.team_a_score} - {room.result.team_b_score} B ({room.result.winner_side === 'TIE' ? 'Tie' : `Winner: Team ${room.result.winner_side}`})
+                    </span>
+                  )}
+                </div>
+                {room.status === 'FINALIZED' && (
+                  <button className="btn btn-xs" disabled={busy} onClick={handleMarkPlayed}>
+                    Mark Match Played
+                  </button>
+                )}
+              </div>
+
+              <form onSubmit={handleRecordResult} className="stack" style={{ gap: '0.5rem' }}>
+                <div className="form-grid">
+                  <div>
+                    <label className="field-label">Random Map Played (Post-Match Only)</label>
+                    <select className="select" value={resMap} onChange={(e) => setResMap(e.target.value)}>
+                      {['de_mirage', 'de_inferno', 'de_nuke', 'de_overpass', 'de_ancient', 'de_anubis', 'de_dust2', 'de_train', 'de_vertigo'].map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="field-label">Team A Score</label>
+                    <input className="input" type="number" min={0} max={60} value={resScoreA} onChange={(e) => setResScoreA(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="field-label">Team B Score</label>
+                    <input className="input" type="number" min={0} max={60} value={resScoreB} onChange={(e) => setResScoreB(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="field-label">External Match URL (Optional)</label>
+                    <input
+                      className="input"
+                      placeholder="https://leetify.com/app/match-details/..."
+                      value={resExternalUrl}
+                      onChange={(e) => setResExternalUrl(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Match Note (Optional)</label>
+                    <input
+                      className="input"
+                      placeholder="Overtime / OT note..."
+                      value={resNotes}
+                      onChange={(e) => setResNotes(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <span className="small muted">
+                    Community match results preserve exact finalized lineups &amp; never alter external Premier/FACEIT ranks.
+                  </span>
+                  <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>
+                    <CheckCircle2 size={14} /> {room.result ? 'Update Match Result' : 'Save Post-Match Result'}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
         )}
 

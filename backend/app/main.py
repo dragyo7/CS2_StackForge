@@ -14,8 +14,8 @@ from app.providers.steam import SteamProvider
 from app.routes.platform import router as platform_router
 from app.routes.players import router as players_router
 from app.routes.rooms import router as rooms_router
+from app.services import scheduler
 from app.services.player_service import get_or_create_default_community
-from app.services.scheduler import _scheduler_task, start_background_scheduler, stop_background_scheduler
 
 
 @asynccontextmanager
@@ -26,11 +26,11 @@ async def lifespan(_app: FastAPI):
         get_or_create_default_community(db)
     finally:
         db.close()
-    start_background_scheduler()
+    scheduler.start_background_scheduler()
     try:
         yield
     finally:
-        await stop_background_scheduler()
+        await scheduler.stop_background_scheduler()
 
 
 settings = get_settings()
@@ -57,6 +57,7 @@ app.include_router(platform_router)
 
 @app.get("/api/health")
 def health():
+    sched = scheduler.get_scheduler_health()
     return {
         "status": "ok",
         "providers": {
@@ -66,5 +67,6 @@ def health():
             "cswatch": "public_ready",
         },
         "map_policy": "random_no_picker",
-        "scheduler": "active" if (_scheduler_task is not None and not _scheduler_task.done()) else "inactive",
+        "scheduler": sched["status"],
+        "scheduler_detail": sched,
     }

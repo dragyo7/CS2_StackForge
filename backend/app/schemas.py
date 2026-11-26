@@ -439,6 +439,40 @@ class FinalizedLineupOut(BaseModel):
     finalized_at: datetime
 
 
+class MatchResultCreate(BaseModel):
+    map_played: str = Field(..., min_length=3, max_length=40)
+    team_a_score: int = Field(..., ge=0, le=60)
+    team_b_score: int = Field(..., ge=0, le=60)
+    winner_side: Literal["A", "B", "TIE"] | None = None
+    external_match_url: str | None = Field(default=None, max_length=500)
+    demo_reference: str | None = Field(default=None, max_length=500)
+    result_source: Literal["manual_host", "leetify_link", "faceit_link", "demo"] = "manual_host"
+    notes: str | None = Field(default=None, max_length=500)
+    recorded_by: str = Field(default="Host", min_length=1, max_length=100)
+    played_at: datetime | None = None
+
+
+class MatchResultOut(BaseModel):
+    id: str
+    room_id: str
+    generation_id: str
+    share_slug: str
+    map_played: str
+    team_a_score: int
+    team_b_score: int
+    winner_side: str
+    external_match_url: str | None = None
+    demo_reference: str | None = None
+    result_source: str
+    validation_status: str
+    model_version: str
+    normalizer_version: str
+    notes: str | None = None
+    recorded_by: str
+    played_at: datetime
+    created_at: datetime
+
+
 class MatchRoomOut(BaseModel):
     id: str
     community_id: str
@@ -452,5 +486,6 @@ class MatchRoomOut(BaseModel):
     constraints: list[PairConstraintOut]
     proposals: list[ProposalOut]
     finalized_lineup: FinalizedLineupOut | None = None
+    result: MatchResultOut | None = None
     created_at: datetime
     updated_at: datetime

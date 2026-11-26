@@ -31,6 +31,7 @@ const METRIC_LABELS: { key: keyof StatSnapshot; label: string; suffix?: string; 
   { key: 'adr', label: 'ADR', decimals: 1 },
   { key: 'aim_rating', label: 'Aim Rating', decimals: 1 },
   { key: 'utility_rating', label: 'Utility Rating', decimals: 1 },
+  { key: 'positioning_rating', label: 'Positioning Rating', decimals: 1 },
   { key: 'preaim', label: 'Pre-aim (°)', suffix: '°', decimals: 2 },
   { key: 'reaction_time_ms', label: 'Time to Damage', suffix: ' ms', decimals: 0 },
   { key: 'spotted_accuracy', label: 'Spotted Acc', suffix: '%', decimals: 1 },
@@ -39,6 +40,7 @@ const METRIC_LABELS: { key: keyof StatSnapshot; label: string; suffix?: string; 
   { key: 'hs_pct', label: 'Headshot %', suffix: '%', decimals: 1 },
   { key: 'opening_duel_pct', label: 'Opening Duel %', suffix: '%', decimals: 1 },
   { key: 'trade_kills_per_match', label: 'Trade Kills %', suffix: '%', decimals: 1 },
+  { key: 'traded_deaths_pct', label: 'Traded Deaths %', suffix: '%', decimals: 1 },
   { key: 'utility_damage_per_round', label: 'Utility Dmg / Rd', decimals: 1 },
   { key: 'flash_assists_per_round', label: 'Flash Assists / Rd', decimals: 2 },
   { key: 'enemies_flashed_per_round', label: 'Enemies Flashed / Rd', decimals: 2 },
@@ -595,6 +597,17 @@ export const PlayerStatsView: React.FC<Props> = ({
                       {profile.player.utility_rating != null ? profile.player.utility_rating.toFixed(1) : 'Unavailable'}
                     </strong>
                     <span className="small muted">Leetify Utility</span>
+                  </div>
+                  <div className="cs2-kpi">
+                    <span className="small muted">Positioning Rating</span>
+                    <strong className="mono">
+                      {profile.player.positioning_rating != null ? profile.player.positioning_rating.toFixed(1) : 'Unavailable'}
+                    </strong>
+                    <span className="small muted">
+                      {profile.player.latest_stats?.traded_deaths_pct != null
+                        ? `${profile.player.latest_stats.traded_deaths_pct.toFixed(1)}% Traded Deaths`
+                        : 'Leetify Positioning'}
+                    </span>
                   </div>
                   <div className="cs2-kpi">
                     <span className="small muted">Pre-aim / Reaction</span>

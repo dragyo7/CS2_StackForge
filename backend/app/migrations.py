@@ -58,3 +58,12 @@ def run_migrations(engine: Engine) -> None:
             "traded_deaths_pct",
         ):
             _add_column_if_missing(conn, "player_stat_snapshots", col_name, "FLOAT")
+
+        # ProviderSnapshot telemetry & lineage columns
+        _add_column_if_missing(conn, "provider_snapshots", "endpoint_category", "VARCHAR(48)")
+        _add_column_if_missing(conn, "provider_snapshots", "player_identity", "VARCHAR(120)")
+        _add_column_if_missing(conn, "provider_snapshots", "normalized_status", "VARCHAR(32)")
+        _add_column_if_missing(conn, "provider_snapshots", "failure_reason", "VARCHAR(300)")
+        _add_column_if_missing(conn, "provider_snapshots", "retry_eligible", "BOOLEAN NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "provider_snapshots", "data_freshness", "VARCHAR(24)")
+        _add_column_if_missing(conn, "provider_snapshots", "last_successful_at", "DATETIME")

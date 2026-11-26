@@ -14,7 +14,17 @@ from app.models import CommunityPlayer, SpreadsheetImport, WatchlistEntry
 from app.providers.cswatch import CSWatchProvider
 from app.providers.external import LeetifyProvider
 from app.providers.steam import SteamProvider
-from app.services import auth_service, identity_resolver, import_service, player_service, scheduler, trust_service
+from app.services import (
+    auth_service,
+    identity_resolver,
+    import_service,
+    metric_registry,
+    ops_service,
+    player_service,
+    scheduler,
+    secrets_service,
+    trust_service,
+)
 
 router = APIRouter(prefix="/api", tags=["platform"])
 
@@ -356,3 +366,66 @@ async def refresh_watched(db: Session = Depends(get_db)):
             await trust_service.run_trust_check_for_player(db, comm.id, cp.id)
             checked += 1
     return {"checked": checked, "overview": trust_service.get_trust_overview(db, comm.id)}
+
+
+# ---------------------------------------------------------------------------
+# Canonical Metrics, Operational Health & Optional Credentials Vault
+# ---------------------------------------------------------------------------
+
+class CredentialSaveRequest(BaseModel):
+    api_key: str = Field(..., min_length=8, max_length=256)
+    validate_live: bool = False
+
+
+class CredentialValidateRequest(BaseModel):
+    api_key: str | None = Field(default=None, max_length=256)
+
+
+@router.get("/metrics/registry")
+def metrics_registry():
+    return {"metrics": metric_registry.get_canonical_metric_registry()}
+
+
+@router.get("/ops/overview")
+def operational_overview(db: Session = Depends(get_db)):
+    comm = player_service.get_or_create_default_community(db)
+    return ops_service.get_operational_overview(db, comm.id)
+
+
+@router.get("/settings/credentials")
+def list_credentials():
+    return {
+        "keyless_mode_supported": True,
+        "storage_backend": "windows_dpapi_vault" if __import__("sys").platform == "win32" else "local_vault",
+        "credentials": secrets_service.list_credentials_status(),
+    }
+
+
+@router.put("/settings/credentials/{provider}")
+async def save_credential(provider: str, payload: CredentialSaveRequest):
+    if provider not in ("steam", "faceit", "leetify"):
+        raise HTTPException(status_code=404, detail="Unsupported credential provider.")
+    try:
+        status_out = secrets_service.save_secret(provider, payload.api_key)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    validation = None
+    if payload.validate_live:
+        validation = await secrets_service.validate_provider_credential(provider, payload.api_key)  # type: ignore[arg-type]
+    return {"credential": status_out, "validation": validation}
+
+
+@router.post("/settings/credentials/{provider}/validate")
+async def validate_credential(provider: str, payload: CredentialValidateRequest | None = None):
+    if provider not in ("steam", "faceit", "leetify"):
+        raise HTTPException(status_code=404, detail="Unsupported credential provider.")
+    candidate = payload.api_key if payload else None
+    return await secrets_service.validate_provider_credential(provider, candidate)  # type: ignore[arg-type]
+
+
+@router.delete("/settings/credentials/{provider}")
+def delete_credential(provider: str):
+    if provider not in ("steam", "faceit", "leetify"):
+        raise HTTPException(status_code=404, detail="Unsupported credential provider.")
+    return {"credential": secrets_service.delete_secret(provider)}  # type: ignore[arg-type]

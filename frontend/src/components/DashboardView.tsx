@@ -31,7 +31,9 @@ export const DashboardView: React.FC<Props> = ({
   onRefreshPlayers,
 }) => {
   const verifiedSteamCount = players.filter((p) => Boolean(p.steam_id64)).length;
-  const finalizedCount = rooms.filter((r) => r.status === 'FINALIZED').length;
+  const finalizedCount = rooms.filter((r) =>
+    ['FINALIZED', 'PLAYED', 'RESULT_RECORDED', 'ANALYZED'].includes(r.status),
+  ).length;
   const statsTrackedCount = players.filter((p) => p.latest_stats != null).length;
 
   const featured =
@@ -88,16 +90,19 @@ export const DashboardView: React.FC<Props> = ({
             <span className="small muted">Source-qualified snapshots</span>
           </div>
           <div className="cs2-kpi">
-            <span className="small muted">External Providers</span>
-            <div className="row" style={{ gap: '0.3rem', marginTop: '0.2rem' }}>
+            <span className="small muted">External Providers &amp; Scheduler</span>
+            <div className="row" style={{ gap: '0.3rem', marginTop: '0.2rem', flexWrap: 'wrap' }}>
               <span className={`badge ${health?.providers.steam === 'configured' ? 'badge-ok' : ''}`}>
-                Steam: {health?.providers.steam === 'configured' ? 'OK' : 'Off'}
+                Steam: {health?.providers.steam === 'configured' ? 'Keyed' : 'XML'}
               </span>
               <span className={`badge ${health?.providers.faceit === 'configured' ? 'badge-ok' : ''}`}>
                 FACEIT: {health?.providers.faceit === 'configured' ? 'OK' : 'Off'}
               </span>
+              <span className={`badge ${health?.scheduler === 'active' ? 'badge-ok' : 'badge-warn'}`}>
+                Scheduler: {health?.scheduler || 'unknown'}
+              </span>
             </div>
-            <span className="small muted">Keyless Leetify & CSWatch active</span>
+            <span className="small muted">Keyless Leetify &amp; CSWatch active</span>
           </div>
         </div>
       </div>

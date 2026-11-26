@@ -344,15 +344,22 @@ class CommunityPlayer(Base):
 
 
 class ProviderSnapshot(Base):
-    """Append-only provider observations (Steam profile/bans, FACEIT, Leetify)."""
+    """Append-only provider observations (Steam profile/bans, FACEIT, Leetify, CSWatch)."""
 
     __tablename__ = "provider_snapshots"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    endpoint_category: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    player_identity: Mapped[str | None] = mapped_column(String(120), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    normalized_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     summary_text: Mapped[str] = mapped_column(String(255), nullable=False)
+    failure_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    retry_eligible: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_freshness: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_successful_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -483,6 +490,34 @@ class FinalizedLineup(Base):
     discord_text: Mapped[str] = mapped_column(Text, nullable=False)
     finalized_by: Mapped[str] = mapped_column(String(120), default="Host", nullable=False)
     finalized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MatchResult(Base):
+    """Post-match outcome preserving finalized teams & random map played (separate from Valve/FACEIT ladder ranks)."""
+
+    __tablename__ = "match_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    room_id: Mapped[str] = mapped_column(ForeignKey("match_rooms.id", ondelete="CASCADE"), nullable=False, unique=True)
+    community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    generation_id: Mapped[str] = mapped_column(ForeignKey("team_generations.id", ondelete="CASCADE"), nullable=False)
+    share_slug: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+
+    map_played: Mapped[str] = mapped_column(String(40), nullable=False)  # random map drawn during match
+    team_a_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    team_b_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    winner_side: Mapped[str] = mapped_column(String(8), nullable=False)  # A | B | TIE
+    external_match_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    demo_reference: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    result_source: Mapped[str] = mapped_column(String(32), default="manual_host", nullable=False)
+    validation_status: Mapped[str] = mapped_column(String(32), default="CONFIRMED", nullable=False)
+    model_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    normalizer_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    lineup_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by: Mapped[str] = mapped_column(String(120), default="Host", nullable=False)
+    played_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuditEvent(Base):

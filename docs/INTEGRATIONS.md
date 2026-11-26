@@ -129,6 +129,13 @@ StackForge never injects into CS2, reads/writes game memory, modifies game files
 - **Caveats:** OAuth scopes, bot permissions, rate limits and Discord policy.
 - **Status:** Later release.
 
+### Official API Key Acquisition & Keyless Operation
+- **Keyless mode works out of the box** via Steam Community XML (`?xml=1`), Leetify Public CS API v3, CSWatch Public API, Google Sheets CSV, and host-recorded match outcomes.
+- Optional keys (`STEAM_API_KEY`, `FACEIT_API_KEY`, `LEETIFY_API_KEY`) can be entered in the **Ops & Keys** tab (`PUT /api/settings/credentials/{provider}`) where they are encrypted server-side via **Windows DPAPI** (`CryptProtectData`, stored outside SQLite and never returned to the browser) or placed in `backend/.env`:
+  - **Steam Web API (`STEAM_API_KEY`):** Obtain via `https://steamcommunity.com/dev/apikey` (required only for official `GetPlayerBans` & keyed `GetPlayerSummaries`).
+  - **FACEIT Data API (`FACEIT_API_KEY`):** Create an app & server-side API key at `https://developers.faceit.com/`.
+  - **Leetify Developer Key (`LEETIFY_API_KEY`):** Create an optional developer key at `https://leetify.com/app/developer` for higher throughput.
+
 ## Integration acceptance checklist
 Before implementation:
 - [ ] Current docs read.

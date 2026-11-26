@@ -11,6 +11,7 @@ from app.schemas import (
     FinalizeRequest,
     GenerateRequest,
     LockPlayerRequest,
+    MatchResultCreate,
     MatchRoomCreate,
     MatchRoomOut,
     PairConstraintCreate,
@@ -21,7 +22,7 @@ from app.schemas import (
     SwapPreviewRequest,
     SwapPreviewResponse,
 )
-from app.services import player_service, room_service
+from app.services import match_result_service, player_service, room_service
 
 router = APIRouter(prefix="/api", tags=["rooms"])
 
@@ -148,6 +149,26 @@ def finalize_room(room_id: str, payload: FinalizeRequest, db: Session = Depends(
 def reopen_room(room_id: str, db: Session = Depends(get_db)):
     comm = player_service.get_or_create_default_community(db)
     return room_service.reopen_room(db, comm.id, room_id)
+
+
+@router.post("/rooms/{room_id}/played", response_model=MatchRoomOut)
+def mark_played(room_id: str, db: Session = Depends(get_db)):
+    comm = player_service.get_or_create_default_community(db)
+    match_result_service.mark_room_played(db, comm.id, room_id)
+    return room_service.get_room(db, comm.id, room_id)
+
+
+@router.post("/rooms/{room_id}/result", response_model=MatchRoomOut, status_code=201)
+def record_result(room_id: str, payload: MatchResultCreate, db: Session = Depends(get_db)):
+    comm = player_service.get_or_create_default_community(db)
+    match_result_service.record_match_result(db, comm.id, room_id, payload)
+    return room_service.get_room(db, comm.id, room_id)
+
+
+@router.get("/standings/community")
+def community_standings(db: Session = Depends(get_db)):
+    comm = player_service.get_or_create_default_community(db)
+    return match_result_service.get_community_standings(db, comm.id)
 
 
 @router.get("/lineups/{share_slug}")

@@ -6,6 +6,7 @@ import {
   LogIn,
   LogOut,
   Plus,
+  Server,
   Shield,
   Swords,
   Users,
@@ -14,6 +15,7 @@ import { api, ApiError, setStoredToken } from './api';
 import { DashboardView } from './components/DashboardView';
 import { LandingAuthView } from './components/LandingAuthView';
 import { MatchRoomView } from './components/MatchRoomView';
+import { OpsAndSettingsView } from './components/OpsAndSettingsView';
 import { PlayerCardsView } from './components/PlayerCardsView';
 import { PlayerRegistryView } from './components/PlayerRegistryView';
 import { PlayerStatsView } from './components/PlayerStatsView';
@@ -21,7 +23,7 @@ import { SharedLineupView } from './components/SharedLineupView';
 import { TrustWatchView } from './components/TrustWatchView';
 import type { AuthState, FinalizedLineup, HealthResponse, MatchRoom, Player } from './types';
 
-type Tab = 'landing' | 'dashboard' | 'room' | 'players' | 'stats' | 'cards' | 'trust';
+type Tab = 'landing' | 'dashboard' | 'room' | 'players' | 'stats' | 'cards' | 'trust' | 'ops';
 
 export const App: React.FC = () => {
   const [tab, setTab] = useState<Tab>('room');
@@ -203,6 +205,15 @@ export const App: React.FC = () => {
           >
             <Shield size={15} /> Trust Watch
           </button>
+          <button
+            className={`nav-tab ${tab === 'ops' && !sharedView ? 'active' : ''}`}
+            onClick={() => {
+              setSharedView(null);
+              setTab('ops');
+            }}
+          >
+            <Server size={15} /> Ops &amp; Keys
+          </button>
         </nav>
 
         <div className="topbar-meta">
@@ -306,6 +317,12 @@ export const App: React.FC = () => {
         ) : tab === 'trust' ? (
           <TrustWatchView
             players={players}
+            onOpenProfile={handleOpenProfile}
+            onError={setErrorMsg}
+          />
+        ) : tab === 'ops' ? (
+          <OpsAndSettingsView
+            onRefreshPlayers={refreshPlayers}
             onOpenProfile={handleOpenProfile}
             onError={setErrorMsg}
           />

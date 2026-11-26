@@ -29,7 +29,10 @@ class Settings(BaseModel):
     database_url: str = os.getenv("DATABASE_URL", "sqlite:///./stackforge.db")
     cors_origins: list[str] = [
         o.strip()
-        for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+        for o in os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
+        ).split(",")
         if o.strip()
     ]
     steam_api_key: str | None = os.getenv("STEAM_API_KEY") or None

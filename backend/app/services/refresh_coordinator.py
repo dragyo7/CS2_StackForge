@@ -34,13 +34,41 @@ def normalize_v2_status(raw: str | None) -> str:
     if not raw:
         return "UNAVAILABLE"
     up = raw.upper()
-    if up == "OK":
+    if up in ("OK", "FLAGGED"):
         return "SUCCESS"
-    if up in ("SUCCESS", "PARTIAL", "PRIVATE", "NOT_LINKED", "NOT_CONFIGURED", "RATE_LIMITED", "UNAVAILABLE", "FAILED"):
+    if up in (
+        "SUCCESS",
+        "PARTIAL",
+        "PRIVATE",
+        "NOT_LINKED",
+        "NOT_CONFIGURED",
+        "RATE_LIMITED",
+        "NOT_FOUND",
+        "UNAVAILABLE",
+        "FAILED",
+    ):
         return up
-    if up == "FLAGGED":
-        return "SUCCESS"
+    if up in ("UNKNOWN", "STALE"):
+        return "UNAVAILABLE"
     return "UNAVAILABLE"
+
+
+def is_retry_eligible_status(status: str | None) -> bool:
+    norm = normalize_v2_status(status)
+    return norm in ("RATE_LIMITED", "UNAVAILABLE", "FAILED", "PARTIAL")
+
+
+def freshness_for_timestamp(fetched_at: datetime | None, provider_key: str) -> str:
+    if fetched_at is None:
+        return "UNKNOWN"
+    dt = fetched_at if fetched_at.tzinfo is not None else fetched_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - dt).total_seconds()
+    ttl = PROVIDER_TTLS.get(provider_key, 900)
+    if age < ttl:
+        return "FRESH"
+    if age < AUTO_STALE_SECONDS:
+        return "AGING"
+    return "STALE"
 
 
 def is_provider_fresh(fetched_at: datetime | None, provider_key: str, max_age_seconds: int | None = None) -> bool:

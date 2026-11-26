@@ -21,3 +21,4 @@ build/
 Thumbs.db
 logs/
 .stackforge-pids.json
+*.dpapi.json

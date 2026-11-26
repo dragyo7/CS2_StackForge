@@ -234,6 +234,7 @@ def evaluate_split(
     # Coverage-weighted multi-dimensional CS2 balance
     aim_gap, aim_cov = _coverage_weighted_gap(team_a_players, team_b_players, "aim_score")
     util_gap, util_cov = _coverage_weighted_gap(team_a_players, team_b_players, "utility_score")
+    pos_gap, pos_cov = _coverage_weighted_gap(team_a_players, team_b_players, "positioning_score")
     entry_gap, entry_cov = _coverage_weighted_gap(team_a_players, team_b_players, "entry_score")
     trade_gap, trade_cov = _coverage_weighted_gap(team_a_players, team_b_players, "trade_score")
     clutch_gap, clutch_cov = _coverage_weighted_gap(team_a_players, team_b_players, "clutch_score")
@@ -276,6 +277,7 @@ def evaluate_split(
         + top_carry_gap * 0.45
         + aim_gap * (0.28 * aim_cov)
         + util_gap * (0.24 * util_cov)
+        + pos_gap * (0.14 * pos_cov)
         + entry_gap * (0.14 * entry_cov)
         + trade_gap * (0.12 * trade_cov)
         + clutch_gap * (0.10 * clutch_cov)
@@ -307,6 +309,7 @@ def evaluate_split(
             "top_carry_gap": top_carry_gap,
             "aim_gap": round(aim_gap * aim_cov, 3),
             "utility_gap": round(util_gap * util_cov, 3),
+            "positioning_gap": round(pos_gap * pos_cov, 3),
             "entry_gap": round(entry_gap * entry_cov, 3),
             "trade_gap": round(trade_gap * trade_cov, 3),
             "clutch_gap": round(clutch_gap * clutch_cov, 3),
@@ -391,6 +394,13 @@ def _team_cs2_notes(
     cons_o, cons_no = _avg_metric(other_players, "consistency_score")
     if cons_n >= 2 and cons_s is not None and cons_no >= 2 and cons_o is not None and cons_s >= cons_o + 2.5:
         notes.append(f"Better recent mechanical consistency ({cons_s:.1f}% clean counter-strafed shots).")
+
+    pos_s, pos_n = _avg_metric(side_players, "positioning_rating")
+    pos_o, pos_no = _avg_metric(other_players, "positioning_rating")
+    td_s, _ = _avg_metric(side_players, "traded_deaths_pct")
+    if pos_n >= 2 and pos_s is not None and pos_no >= 2 and pos_o is not None and pos_s >= pos_o + 3.0:
+        td_txt = f", {td_s:.1f}% traded deaths" if td_s is not None else ""
+        notes.append(f"Stronger map positioning & spacing ({pos_s:.1f} avg Positioning Rating{td_txt}).")
 
     clutch_s, clutch_n = _avg_metric(side_players, "clutch_win_pct")
     clutch_o, clutch_no = _avg_metric(other_players, "clutch_win_pct")

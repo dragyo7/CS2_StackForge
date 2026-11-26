@@ -49,11 +49,47 @@ from app.schemas import (
 )
 from app.services.humour_engine import CardMetricContext, generate_player_card
 from app.services.refresh_coordinator import (
+    freshness_for_timestamp,
     is_provider_fresh,
+    is_retry_eligible_status,
     normalize_v2_status,
     run_single_flight,
     throttle_provider,
 )
+
+
+def _add_provider_snapshot(
+    db: Session,
+    *,
+    player_id: str,
+    provider: str,
+    status: str,
+    summary_text: str,
+    fetched_at: datetime,
+    endpoint_category: str = "profile",
+    player_identity: str | None = None,
+    failure_reason: str | None = None,
+    retry_eligible: bool | None = None,
+    payload: dict | None = None,
+) -> None:
+    norm = normalize_v2_status(status)
+    db.add(
+        ProviderSnapshot(
+            player_id=player_id,
+            provider=provider,
+            endpoint_category=endpoint_category,
+            player_identity=player_identity,
+            status=status,
+            normalized_status=norm,
+            summary_text=summary_text[:255],
+            failure_reason=failure_reason[:300] if failure_reason else None,
+            retry_eligible=is_retry_eligible_status(status) if retry_eligible is None else retry_eligible,
+            data_freshness=freshness_for_timestamp(fetched_at, "steam" if provider.startswith("steam") else provider),
+            last_successful_at=fetched_at if norm in ("SUCCESS", "PARTIAL") else None,
+            payload_json=json.dumps(payload) if payload else None,
+            fetched_at=fetched_at,
+        )
+    )
 from app.services.steam_parser import is_valid_steam_id64, normalize_steam_url_or_id, parse_import_line
 
 DEFAULT_COMMUNITY_SLUG = "main-stack"
@@ -1032,14 +1068,14 @@ async def refresh_player_profile(
         if not player.steam_id64:
             player.refresh_status = "NOT_LINKED"
             player.refresh_error = "No SteamID64 linked to refresh external providers."
-            db.add(
-                ProviderSnapshot(
-                    player_id=player.id,
-                    provider="steam_profile",
-                    status="NOT_LINKED",
-                    summary_text="No SteamID64 linked.",
-                    fetched_at=now,
-                )
+            _add_provider_snapshot(
+                db,
+                player_id=player.id,
+                provider="steam_profile",
+                status="NOT_LINKED",
+                endpoint_category="profile",
+                summary_text="No SteamID64 linked.",
+                fetched_at=now,
             )
             db.commit()
             return RefreshProfileResponse(
@@ -1083,15 +1119,18 @@ async def refresh_player_profile(
                     s_res = summaries.get(sid)
                     b_res = bans.get(sid)
                     if s_res:
-                        db.add(
-                            ProviderSnapshot(
-                                player_id=player.id,
-                                provider="steam_profile",
-                                status=s_res.status,
-                                summary_text=s_res.summary,
-                                payload_json=json.dumps(s_res.data) if s_res.data else None,
-                                fetched_at=now,
-                            )
+                        _add_provider_snapshot(
+                            db,
+                            player_id=player.id,
+                            provider="steam_profile",
+                            status=s_res.status,
+                            endpoint_category="profile",
+                            player_identity=sid,
+                            failure_reason=s_res.failure_reason,
+                            retry_eligible=s_res.retry_eligible,
+                            summary_text=s_res.summary,
+                            payload=s_res.data,
+                            fetched_at=now,
                         )
                         if s_res.status == "OK":
                             persona = (s_res.data or {}).get("persona_name")
@@ -1117,15 +1156,18 @@ async def refresh_player_profile(
                             )
                         )
                     if b_res:
-                        db.add(
-                            ProviderSnapshot(
-                                player_id=player.id,
-                                provider="steam_bans",
-                                status=b_res.status,
-                                summary_text=b_res.summary,
-                                payload_json=json.dumps(b_res.data) if b_res.data else None,
-                                fetched_at=now,
-                            )
+                        _add_provider_snapshot(
+                            db,
+                            player_id=player.id,
+                            provider="steam_bans",
+                            status=b_res.status,
+                            endpoint_category="bans",
+                            player_identity=sid,
+                            failure_reason=b_res.failure_reason,
+                            retry_eligible=b_res.retry_eligible,
+                            summary_text=b_res.summary,
+                            payload=b_res.data,
+                            fetched_at=now,
                         )
                         prov_results.append(
                             ProviderRefreshResultOut(
@@ -1165,15 +1207,18 @@ async def refresh_player_profile(
                     if faceit_provider is None and faceit.is_configured:
                         await throttle_provider("faceit")
                     f_res = await faceit.fetch_by_steam_id64(sid)
-                    db.add(
-                        ProviderSnapshot(
-                            player_id=player.id,
-                            provider="faceit",
-                            status=f_res.status,
-                            summary_text=f_res.summary,
-                            payload_json=json.dumps(f_res.data) if f_res.data else None,
-                            fetched_at=now,
-                        )
+                    _add_provider_snapshot(
+                        db,
+                        player_id=player.id,
+                        provider="faceit",
+                        status=f_res.status,
+                        endpoint_category="profile_and_stats",
+                        player_identity=sid,
+                        failure_reason=f_res.failure_reason,
+                        retry_eligible=f_res.retry_eligible,
+                        summary_text=f_res.summary,
+                        payload=f_res.data,
+                        fetched_at=now,
                     )
                     if f_res.status == "OK" and f_res.data:
                         if f_res.data.get("faceit_elo") is not None:
@@ -1238,15 +1283,18 @@ async def refresh_player_profile(
                     if leetify_provider is None:
                         await throttle_provider("leetify")
                     l_res = await leetify.fetch_by_steam_id64(sid)
-                    db.add(
-                        ProviderSnapshot(
-                            player_id=player.id,
-                            provider="leetify",
-                            status=l_res.status,
-                            summary_text=l_res.summary,
-                            payload_json=json.dumps(l_res.data) if l_res.data else None,
-                            fetched_at=now,
-                        )
+                    _add_provider_snapshot(
+                        db,
+                        player_id=player.id,
+                        provider="leetify",
+                        status=l_res.status,
+                        endpoint_category="profile_and_matches",
+                        player_identity=sid,
+                        failure_reason=l_res.failure_reason,
+                        retry_eligible=l_res.retry_eligible,
+                        summary_text=l_res.summary,
+                        payload=l_res.data,
+                        fetched_at=now,
                     )
                     if l_res.status in ("OK", "PARTIAL") and l_res.data:
                         if l_res.data.get("leetify_rating") is not None:
@@ -1409,15 +1457,18 @@ async def refresh_player_profile(
                         await throttle_provider("cswatch")
                     cw = cswatch_provider or CSWatchProvider()
                     cw_res = await cw.fetch_player(sid)
-                    db.add(
-                        ProviderSnapshot(
-                            player_id=player.id,
-                            provider="cswatch",
-                            status=cw_res.status,
-                            summary_text=cw_res.summary,
-                            payload_json=json.dumps(cw_res.data) if cw_res.data else None,
-                            fetched_at=now,
-                        )
+                    _add_provider_snapshot(
+                        db,
+                        player_id=player.id,
+                        provider="cswatch",
+                        status=cw_res.status,
+                        endpoint_category="reputation",
+                        player_identity=sid,
+                        failure_reason=cw_res.failure_reason,
+                        retry_eligible=cw_res.retry_eligible,
+                        summary_text=cw_res.summary,
+                        payload=cw_res.data,
+                        fetched_at=now,
                     )
                     if cw_res.data:
                         if cw_res.data.get("avatar_url") and not player.avatar_url:
@@ -1575,6 +1626,14 @@ async def refresh_all_players(
                     "provider_results": [],
                 }
             )
+    from app.services import scheduler as _scheduler
+
+    failed_items = [r for r in results if r.get("status") in ("FAILED", "UNAVAILABLE")]
+    _scheduler.record_refresh_telemetry(
+        full_refresh=True,
+        had_failure=bool(failed_items),
+        failure_reason=failed_items[0]["message"] if failed_items else None,
+    )
     return {"total": len(results), "results": results}
 
 

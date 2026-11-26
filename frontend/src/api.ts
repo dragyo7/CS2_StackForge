@@ -1,10 +1,13 @@
 import type {
   AuthState,
   BulkImportResponse,
+  CommunityStandingsResponse,
+  CredentialStatus,
   HealthResponse,
   HumourIntensity,
   ImportHistoryItem,
   MatchRoom,
+  OpsOverview,
   Player,
   PlayerCompare,
   PlayerProfile,
@@ -434,5 +437,50 @@ export const api = {
   refreshWatched: () =>
     request<{ checked: number; overview: TrustOverview }>('/trust/refresh-watched', {
       method: 'POST',
+    }),
+
+  // Match Lifecycle & Community Standings
+  markRoomPlayed: (roomId: string) =>
+    request<MatchRoom>(`/rooms/${roomId}/played`, { method: 'POST' }),
+  recordRoomResult: (
+    roomId: string,
+    payload: {
+      map_played: string;
+      team_a_score: number;
+      team_b_score: number;
+      external_match_url?: string | null;
+      demo_reference?: string | null;
+      notes?: string | null;
+    },
+  ) =>
+    request<MatchRoom>(`/rooms/${roomId}/result`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  communityStandings: () => request<CommunityStandingsResponse>('/standings/community'),
+
+  // Operational Health, Canonical Metrics & Optional Secret Vault
+  opsOverview: () => request<OpsOverview>('/ops/overview'),
+  metricsRegistry: () => request<{ metrics: any[] }>('/metrics/registry'),
+  getCredentials: () =>
+    request<{ keyless_mode_supported: boolean; storage_backend: string; credentials: CredentialStatus[] }>(
+      '/settings/credentials',
+    ),
+  saveCredential: (provider: string, apiKey: string, validateLive = false) =>
+    request<{ credential: CredentialStatus; validation: any }>(`/settings/credentials/${provider}`, {
+      method: 'PUT',
+      body: JSON.stringify({ api_key: apiKey, validate_live: validateLive }),
+    }),
+  validateCredential: (provider: string, apiKey?: string) =>
+    request<{ provider: string; valid: boolean; status: string; message: string }>(
+      `/settings/credentials/${provider}/validate`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ api_key: apiKey || null }),
+      },
+    ),
+  deleteCredential: (provider: string) =>
+    request<{ credential: CredentialStatus }>(`/settings/credentials/${provider}`, {
+      method: 'DELETE',
     }),
 };

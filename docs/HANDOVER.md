@@ -13,13 +13,13 @@ StackForge helps a community select ten CS2 players, assess available player dat
 
 ## Current implemented state (MVP + Player Intelligence V2, Individual Refresh & Auto Freshness)
 Implemented and tested in `backend/` and `frontend/`:
-1. **Backwards-compatible SQLite schema & migrations** (`backend/app/migrations.py`): additive columns for `faceit_level`, `aim_rating`, `utility_rating`, `positioning_rating`, `preaim`, `reaction_time_ms`, `spotted_accuracy`, `spray_accuracy`, `enemies_flashed_per_round`, `traded_deaths_pct`, plus `is_archived`. Legacy `manual_rating` column preserved safely but excluded from matchmaking (`norm_v2`).
-2. **Community Google Sheet / CSV / XLSX Import & Sync**: preview, column mapping, duplicate/conflict detection, safe re-import preserving edits, and `Sync Now` (`backend/app/services/import_service.py`).
+1. **Backwards-compatible SQLite schema & migrations** (`backend/app/migrations.py`): additive columns for `faceit_level`, `aim_rating`, `utility_rating`, `positioning_rating`, `preaim`, `reaction_time_ms`, `spotted_accuracy`, `spray_accuracy`, `enemies_flashed_per_round`, `traded_deaths_pct`, `provider_snapshots` telemetry/lineage columns, `is_archived`, plus `match_results` post-match outcome table. Legacy `manual_rating` column preserved safely but excluded from matchmaking (`norm_v2`) and user-facing spreadsheet import mappings.
+2. **Community Google Sheet / CSV / XLSX Import & Sync**: preview, column mapping (manual ratings removed), duplicate/conflict detection, safe re-import preserving edits, and `Sync Now` (`backend/app/services/import_service.py`).
 3. **Universal Identity Resolution & Alias History**: resolves SteamID64, Steam `/profiles/` & `/id/`, CSStats, Leetify, CSWatch, FACEIT, and nickname candidates with `VERIFIED`/`CANDIDATE`/`UNRESOLVED` confidence and append-only alias tracking.
-4. **Live Keyless CS2 Data (`Leetify v3`, `Steam ?xml=1`, `CSWatch`) + Keyed Adapters (`Steam Bans`, `FACEIT v4`)**: extracts real Premier CSR, Leetify Rating, FACEIT ELO/Level, Aim/Utility/Positioning ratings, Pre-aim, Time-to-Damage (`reaction_time_ms`), spotted/spray accuracy, recent 10 & lifetime snapshots, and match history (`Unavailable` where genuinely absent — e.g. `kast` on Leetify v3).
-5. **Individual Player Refresh & Single-Instance Freshness Scheduler** (`refresh_coordinator.py`, `scheduler.py`): refreshes a single player from Registry (Cards/Standings), Player Profile (with optional provider slice), or Match Room (Roster/Picker); returns explicit `SUCCESS`/`PARTIAL`/`PRIVATE`/`NOT_LINKED`/`NOT_CONFIGURED`/`RATE_LIMITED`/`UNAVAILABLE`/`FAILED`; enforces single-flight dedup, per-provider TTLs, rate limits, `Retry-After`/exponential backoff, and 24h/startup/login stale refreshes.
-6. **10-player Match Room, Community Standings & CS2-Native Explanations** (`norm_v2`, `stackforge_126_v2`): excludes manual ratings entirely, separates scales, calibrates aim/utility/damage/entry/trading/clutch/consistency + recent/lifetime priority cleanly, splits `INSUFFICIENT_DATA` players evenly, ranks players by competitive strength (`GET /api/players/rankings`), shows compact safety badges, and explains matchups like a CS2 captain without formula leakage.
-7. **Trust Watch & Tactical UI**: separated `OFFICIAL_ENFORCEMENT`, `THIRD_PARTY_REPUTATION`, `COMMUNITY_REPORT`, `HUMAN_REVIEW`, private watchlist review/dismiss, `Standings Table` & `Card View` toggle, and Discord export.
+4. **Live Keyless CS2 Data, Canonical Metrics & Secure Credential Vault**: `GET /api/metrics/registry` defines canonical units/bounds/lineage; keyless `Leetify v3`, `Steam ?xml=1`, and `CSWatch` run without keys, while optional keys (`STEAM_API_KEY`, `FACEIT_API_KEY`, `LEETIFY_API_KEY`) can be encrypted server-side in a Windows DPAPI vault via `Ops & Keys` (`secrets_service.py`) without ever leaking to logs or browser.
+5. **Individual Player Refresh, Active Scheduler Fix & Operational Dashboard**: fixed `main.py` reference bug so `/api/health` reports true `scheduler: active` state in production; added bounded `Leetify` 429 `Retry-After` handling, full `ProviderSnapshot` provenance, and `GET /api/ops/overview` (`OpsAndSettingsView.tsx`).
+6. **10-player Match Room, Post-Match Lifecycle & Community Standings** (`norm_v2`, `stackforge_126_v2`): now wires `positioning_rating` + `traded_deaths_pct` into `positioning_score`, calibrates `flash_assists_per_round` to real per-round CS2 values, persists `dimension_scores` inside generation snapshots, and supports `FINALIZED -> PLAYED -> RESULT_RECORDED -> ANALYZED` + `GET /api/standings/community` without altering external Valve/FACEIT/Leetify ranks.
+7. **Trust Watch & Tactical UI**: separated `OFFICIAL_ENFORCEMENT`, `THIRD_PARTY_REPUTATION`, `COMMUNITY_REPORT`, `HUMAN_REVIEW`, private watchlist review/dismiss, `Standings Table` & `Card View` toggle, `Ops & Keys`, and Discord export.
 
 **Current live status & planned/deferred items:**
 - **Active live without keys:** Steam Community XML (`?xml=1`), Leetify Public CS API v3 (`429` retry/backoff), CSWatch Public JSON API (25/min cap), and Google Sheets CSV export (live-verified across persistent community DB).
@@ -40,7 +40,9 @@ Implemented and tested in `backend/` and `frontend/`:
 - `TESTING.md`: acceptance and test strategy.
 - `ROLLBACK.md`: rollback/migration/release plan.
 - `INTEGRATIONS.md`: external services, usage, access status and licensing checklist.
-- `AUDIT_AND_ROADMAP.md`: verified end-to-end provider/metric audit (Part B), open-source CS2 ecosystem research (`cs-demo-manager`, `awpy`, `demoparser2`, `CSManager`, Leetify API v3), and prioritized product roadmap.
+- `AUDIT_AND_ROADMAP.md`: verified end-to-end provider/metric audit, data lineage, discrepancy log, open-source CS2 ecosystem research, and prioritized roadmap.
+- `API.md`: complete REST API reference.
+- `DEMO_PIPELINE.md`: async CS2 `.dem` replay analysis pipeline design (`awpy` vs `demoparser2`).
 - `features/`: feature specifications.
 - `bugs/`: known issues and triage template.
 - `defense/`: integrity/anti-cheat methodology and review policy.

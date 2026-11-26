@@ -13,6 +13,7 @@ from app.models import (
     CommunityPlayer,
     FinalizedLineup,
     GenerationFeedback,
+    MatchResult,
     MatchRoom,
     MatchRoomPlayer,
     PlayerStatSnapshot,
@@ -155,6 +156,11 @@ def to_room_out(db: Session, room: MatchRoom) -> MatchRoomOut:
         if prop:
             fin_out = _to_finalized_out(fin, prop)
 
+    from app.services.match_result_service import to_match_result_out
+
+    res_row = db.scalar(select(MatchResult).where(MatchResult.room_id == room.id))
+    res_out = to_match_result_out(res_row) if res_row else None
+
     return MatchRoomOut(
         id=room.id,
         community_id=room.community_id,
@@ -168,6 +174,7 @@ def to_room_out(db: Session, room: MatchRoom) -> MatchRoomOut:
         constraints=constraints,
         proposals=proposals,
         finalized_lineup=fin_out,
+        result=res_out,
         created_at=room.created_at,
         updated_at=room.updated_at,
     )
@@ -374,6 +381,16 @@ def _build_player_inputs(db: Session, room: MatchRoom) -> tuple[list[PlayerInput
                 "confidence": norm.confidence,
                 "sources_used": norm.sources_used,
                 "missing_sources": norm.missing_sources,
+                "dimension_scores": {
+                    "aim_score": norm.aim_score,
+                    "utility_score": norm.utility_score,
+                    "positioning_score": norm.positioning_score,
+                    "damage_score": norm.damage_score,
+                    "survival_score": norm.survival_score,
+                    "entry_score": norm.entry_score,
+                    "trade_score": norm.trade_score,
+                    "clutch_score": norm.clutch_score,
+                },
                 "adr": eff["adr"],
                 "kd_ratio": eff["kd_ratio"],
                 "kast": eff["kast"],
@@ -910,7 +927,12 @@ def finalize_room(db: Session, community_id: str, room_id: str, req: FinalizeReq
 
 def reopen_room(db: Session, community_id: str, room_id: str) -> MatchRoomOut:
     room = _load_room(db, community_id, room_id)
-    if room.status != "FINALIZED":
+    if room.status in ("RESULT_RECORDED", "ANALYZED"):
+        raise HTTPException(
+            status_code=409,
+            detail="Room has a recorded post-match result and its teams cannot be altered.",
+        )
+    if room.status not in ("FINALIZED", "PLAYED"):
         raise HTTPException(status_code=409, detail="Only a finalized room can be reopened.")
     room.status = "REVIEWING"
     room.version += 1

@@ -101,13 +101,12 @@ def parse_xlsx_bytes(raw_bytes: bytes) -> tuple[list[str], list[dict[str, str]]]
 
 
 def auto_detect_mapping(headers: list[str]) -> dict[str, str | None]:
-    """Maps spreadsheet columns to StackForge fields."""
+    """Maps spreadsheet columns to StackForge fields (manual ratings excluded)."""
     mapping: dict[str, str | None] = {
         "display_name": None,
         "real_name": None,
         "identity_url": None,
         "steam_id64": None,
-        "manual_rating": None,
         "primary_role": None,
         "premier_rating": None,
         "faceit_elo": None,
@@ -134,10 +133,6 @@ def auto_detect_mapping(headers: list[str]) -> dict[str, str | None]:
     for key in ("steamid64", "steam_id64", "steamid", "steam64"):
         if key in low_map:
             mapping["steam_id64"] = low_map[key]
-            break
-    for key in ("rating", "manual rating", "skill", "skill rating"):
-        if key in low_map:
-            mapping["manual_rating"] = low_map[key]
             break
     for key in ("role", "primary role"):
         if key in low_map:

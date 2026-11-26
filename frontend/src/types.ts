@@ -456,6 +456,27 @@ export interface FinalizedLineup {
   finalized_at: string;
 }
 
+export interface MatchResult {
+  id: string;
+  room_id: string;
+  generation_id: string;
+  share_slug: string;
+  map_played: string;
+  team_a_score: number;
+  team_b_score: number;
+  winner_side: 'A' | 'B' | 'TIE' | string;
+  external_match_url?: string | null;
+  demo_reference?: string | null;
+  result_source: string;
+  validation_status: string;
+  model_version: string;
+  normalizer_version: string;
+  notes?: string | null;
+  recorded_by: string;
+  played_at: string;
+  created_at: string;
+}
+
 export interface MatchRoom {
   id: string;
   community_id: string;
@@ -469,6 +490,7 @@ export interface MatchRoom {
   constraints: PairConstraint[];
   proposals: Proposal[];
   finalized_lineup: FinalizedLineup | null;
+  result?: MatchResult | null;
   created_at: string;
   updated_at: string;
 }
@@ -497,4 +519,114 @@ export interface HealthResponse {
     cswatch?: string;
   };
   map_policy: string;
+  scheduler?: string;
+  scheduler_detail?: Record<string, any>;
+}
+
+export interface CredentialStatus {
+  provider: 'steam' | 'faceit' | 'leetify';
+  configured: boolean;
+  source: string;
+  masked_hint: string | null;
+  env_var: string;
+}
+
+export interface OpsOverview {
+  backend_status: string;
+  database: {
+    status: string;
+    engine: string;
+    players_active: number;
+    steam_verified: number;
+    unresolved_identities: number;
+    match_rooms_total: number;
+    match_results_recorded: number;
+  };
+  scheduler: {
+    status: string;
+    state: string;
+    enabled: boolean;
+    disabled_reason: string | null;
+    singleton_running: boolean;
+    stale_threshold_hours: number;
+    started_at: string | null;
+    last_cycle_at: string | null;
+    last_cycle_status: string;
+    last_cycle_refreshed: number;
+    last_cycle_error: string | null;
+    cycles_completed: number;
+    last_full_refresh_at: string | null;
+    last_failed_refresh_at: string | null;
+    last_failed_refresh_reason: string | null;
+  };
+  stale_players_count: number;
+  stale_players: {
+    id: string;
+    display_name: string;
+    steam_id64: string | null;
+    refresh_status: string;
+    last_successful_refresh_at: string | null;
+  }[];
+  insufficient_data_count: number;
+  insufficient_data_players: {
+    id: string;
+    display_name: string;
+    steam_id64: string | null;
+    data_status: string;
+    refresh_status: string;
+    last_successful_refresh_at: string | null;
+  }[];
+  providers: {
+    provider: string;
+    label: string;
+    mode: string;
+    configured: boolean;
+    health_state: string;
+    active_players_ok: number;
+    success_rate_pct: number;
+    total_historical_attempts: number;
+    rate_limit_events: number;
+    private_or_unlinked_players: number;
+    last_successful_at: string | null;
+    last_failed_at: string | null;
+  }[];
+  credentials: CredentialStatus[];
+  demo_queue: {
+    status: string;
+    pending_jobs: number;
+  };
+}
+
+export interface CommunityStandingsResponse {
+  total_matches_recorded: number;
+  separation_note: string;
+  standings: {
+    community_player_id: string;
+    display_name: string;
+    steam_id64: string | null;
+    avatar_url: string | null;
+    matches: number;
+    wins: number;
+    losses: number;
+    ties: number;
+    win_pct: number;
+    rounds_won: number;
+    rounds_lost: number;
+    round_diff: number;
+    community_internal_rating: number;
+    streak: number;
+    last_map: string | null;
+    last_played_at: string | null;
+  }[];
+  recent_matches: {
+    id: string;
+    room_id: string;
+    share_slug: string;
+    map_played: string;
+    team_a_score: number;
+    team_b_score: number;
+    winner_side: string;
+    result_source: string;
+    played_at: string;
+  }[];
 }

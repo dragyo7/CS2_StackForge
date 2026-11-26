@@ -7,15 +7,16 @@ import httpx
 
 from app.config import get_settings
 from app.providers.base import ProviderResult
+from app.services.secrets_service import get_secret
 
 
 class SteamProvider:
     """
     Server-side Steam adapter:
-    - Uses Steam Web API (`STEAM_API_KEY`) when configured.
+    - Uses Steam Web API (`STEAM_API_KEY` env or OS DPAPI secret vault) when configured.
     - Falls back to Valve's public read-only Steam Community XML feed (`?xml=1`)
       for vanity resolution and public persona/avatar summaries when no key is configured.
-    - Never fakes GetPlayerBans when `STEAM_API_KEY` is absent (`NOT_CONFIGURED`).
+    - Never fakes GetPlayerBans when no key is configured (`NOT_CONFIGURED`).
     """
 
     BASE_URL = "https://api.steampowered.com"
@@ -28,7 +29,7 @@ class SteamProvider:
         use_public_xml: bool = True,
     ):
         settings = get_settings()
-        self.api_key = api_key if api_key is not None else settings.steam_api_key
+        self.api_key = api_key if api_key is not None else (get_secret("steam") or settings.steam_api_key)
         self.timeout = timeout if timeout is not None else max(settings.provider_timeout_seconds, 6.0)
         self.use_public_xml = use_public_xml
 

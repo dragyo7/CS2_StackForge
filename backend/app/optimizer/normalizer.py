@@ -178,6 +178,7 @@ class NormalizedPlayer:
     # Sub-dimension scores (0..100 when genuinely sampled, else None)
     aim_score: float | None = None
     utility_score: float | None = None
+    positioning_score: float | None = None
     damage_score: float | None = None
     survival_score: float | None = None
     entry_score: float | None = None
@@ -266,15 +267,22 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
     ])
 
     util_rating_norm = _piecewise_linear(player.utility_rating, UTILITY_RATING_ANCHORS) if player.utility_rating is not None else None
-    # Utility damage alone is capped conservatively; flash efficiency balances utility quality
+    # Utility damage alone is capped conservatively; flash efficiency calibrated to per-round rates
     util_dmg_norm = _piecewise_linear(player.utility_damage_per_round, [(4.0, 30.0), (11.0, 48.0), (18.0, 66.0), (26.0, 84.0), (36.0, 94.0)]) if player.utility_damage_per_round is not None else None
-    flash_ast_norm = _piecewise_linear(player.flash_assists_per_round, [(0.04, 34.0), (0.12, 50.0), (0.22, 68.0), (0.34, 86.0), (0.50, 95.0)]) if player.flash_assists_per_round is not None else None
+    flash_ast_norm = _piecewise_linear(player.flash_assists_per_round, [(0.002, 32.0), (0.010, 50.0), (0.025, 68.0), (0.045, 84.0), (0.080, 95.0)]) if player.flash_assists_per_round is not None else None
     flashed_norm = _piecewise_linear(player.enemies_flashed_per_round, [(0.15, 34.0), (0.35, 50.0), (0.55, 68.0), (0.80, 86.0)]) if player.enemies_flashed_per_round is not None else None
     utility_score = _weighted_blend([
         (util_rating_norm, 0.56),
         (util_dmg_norm, 0.18),
         (flash_ast_norm, 0.14),
         (flashed_norm, 0.12),
+    ])
+
+    pos_rating_norm = _piecewise_linear(player.positioning_rating, [(25.0, 26.0), (42.0, 44.0), (55.0, 58.0), (68.0, 74.0), (80.0, 88.0), (92.0, 96.0)]) if player.positioning_rating is not None else None
+    traded_death_norm = _piecewise_linear(player.traded_deaths_pct, [(25.0, 32.0), (42.0, 50.0), (55.0, 66.0), (68.0, 82.0), (80.0, 92.0)]) if player.traded_deaths_pct is not None else None
+    positioning_score = _weighted_blend([
+        (pos_rating_norm, 0.72),
+        (traded_death_norm, 0.28),
     ])
 
     adr_norm = _piecewise_linear(player.adr, [(50.0, 28.0), (70.0, 50.0), (85.0, 70.0), (100.0, 88.0), (115.0, 96.0)]) if player.adr is not None else None
@@ -293,6 +301,8 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
         component_scores["aim"] = aim_score  # type: ignore[assignment]
     if util_rating_norm is not None:
         component_scores["utility"] = utility_score  # type: ignore[assignment]
+    if pos_rating_norm is not None and positioning_score is not None:
+        component_scores["positioning"] = positioning_score
 
     sources_used = [s for s in ("premier", "faceit", "leetify") if s in component_scores]
     external_rating_count = len(sources_used)
@@ -308,12 +318,13 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
         missing_sources.append("recent_form")
 
     combat_composite = _weighted_blend([
-        (damage_score, 0.30),
-        (survival_score, 0.22),
-        (aim_score, 0.22),
-        (utility_score, 0.14),
-        (entry_score, 0.06),
-        (clutch_score, 0.06),
+        (damage_score, 0.28),
+        (survival_score, 0.20),
+        (aim_score, 0.21),
+        (utility_score, 0.13),
+        (positioning_score, 0.08),
+        (entry_score, 0.05),
+        (clutch_score, 0.05),
     ])
 
     normalized_strength: float | None = None
@@ -387,6 +398,7 @@ def normalize_player(player: PlayerInput) -> NormalizedPlayer:
         map_adjustments=map_adj,
         aim_score=aim_score,
         utility_score=utility_score,
+        positioning_score=positioning_score,
         damage_score=damage_score,
         survival_score=survival_score,
         entry_score=entry_score,

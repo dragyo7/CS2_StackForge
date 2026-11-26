@@ -4,6 +4,13 @@ import httpx
 
 from app.config import get_settings
 from app.providers.base import ProviderResult
+from app.services.secrets_service import get_secret
+
+
+def _clamp_range(val: float | None, low: float, high: float) -> float | None:
+    if val is None:
+        return None
+    return val if low <= val <= high else None
 
 
 def _safe_float(val) -> float | None:
@@ -20,20 +27,25 @@ def _safe_int(val) -> int | None:
     return int(round(f)) if f is not None else None
 
 
-def _retry_delay_seconds(resp: httpx.Response, attempt: int, base: float = 1.5) -> float:
+def _retry_delay_seconds(resp: httpx.Response, attempt: int, base: float = 1.2) -> float | None:
+    """Returns bounded retry delay (<= 5s) when safe; returns None to stop retrying long 429 windows."""
     ra = resp.headers.get("Retry-After")
     if ra:
         try:
-            return max(0.5, min(30.0, float(ra)))
+            secs = float(ra)
+            if secs <= 5.0:
+                return max(0.3, secs)
+            return None
         except ValueError:
-            pass
-    return min(15.0, base * (2 ** attempt))
+            return None
+    return min(4.0, base * (2 ** attempt))
 
 
 def _pct_100(val: float | None) -> float | None:
     if val is None:
         return None
-    return round(val * 100.0, 2) if 0.0 <= val <= 1.0 else round(val, 2)
+    pct = round(val * 100.0, 2) if 0.0 <= val <= 1.0 else round(val, 2)
+    return _clamp_range(pct, 0.0, 100.0)
 
 
 class FaceitProvider:
@@ -43,7 +55,7 @@ class FaceitProvider:
 
     def __init__(self, api_key: str | None = None, timeout: float | None = None):
         settings = get_settings()
-        self.api_key = api_key if api_key is not None else settings.faceit_api_key
+        self.api_key = api_key if api_key is not None else (get_secret("faceit") or settings.faceit_api_key)
         self.timeout = timeout if timeout is not None else settings.provider_timeout_seconds
 
     @property
@@ -164,14 +176,14 @@ class FaceitProvider:
 class LeetifyProvider:
     """
     Leetify Public CS API v3 adapter.
-    Supports keyless public lookups (with optional _leetify_key when LEETIFY_API_KEY is set).
+    Supports keyless public lookups (with optional _leetify_key when configured in env/DPAPI vault).
     """
 
     BASE_URL = "https://api-public.cs-prod.leetify.com"
 
     def __init__(self, api_key: str | None = None, timeout: float | None = None):
         settings = get_settings()
-        self.api_key = api_key if api_key is not None else settings.leetify_api_key
+        self.api_key = api_key if api_key is not None else (get_secret("leetify") or settings.leetify_api_key)
         self.timeout = timeout if timeout is not None else max(settings.provider_timeout_seconds, 6.0)
 
     @property
@@ -186,6 +198,7 @@ class LeetifyProvider:
             return ProviderResult(
                 provider="leetify",
                 status="NOT_LINKED",
+                endpoint_category="profile_and_matches",
                 summary="No SteamID64 linked for Leetify lookup.",
             )
         try:
@@ -201,25 +214,38 @@ class LeetifyProvider:
                     )
                     if resp.status_code != 429:
                         break
-                    await _asyncio.sleep(_retry_delay_seconds(resp, attempt, base=1.5))
+                    wait_s = _retry_delay_seconds(resp, attempt, base=1.2)
+                    if wait_s is None:
+                        break
+                    await _asyncio.sleep(wait_s)
 
                 assert resp is not None
                 if resp.status_code == 404:
                     return ProviderResult(
                         provider="leetify",
                         status="NOT_LINKED",
+                        endpoint_category="profile_and_matches",
+                        player_identity=steam_id64,
                         summary="No public Leetify profile found for this SteamID64.",
                     )
                 if resp.status_code == 429:
                     return ProviderResult(
                         provider="leetify",
                         status="RATE_LIMITED",
+                        endpoint_category="profile_and_matches",
+                        player_identity=steam_id64,
+                        failure_reason="HTTP 429 rate limited by Leetify API",
+                        retry_eligible=True,
                         summary="Leetify public API rate limit reached (HTTP 429).",
                     )
                 if resp.status_code != 200:
                     return ProviderResult(
                         provider="leetify",
                         status="UNAVAILABLE",
+                        endpoint_category="profile_and_matches",
+                        player_identity=steam_id64,
+                        failure_reason=f"HTTP {resp.status_code} from Leetify profile endpoint",
+                        retry_eligible=True,
                         summary=f"Leetify API unavailable (HTTP {resp.status_code}).",
                     )
                 payload = resp.json()
@@ -228,6 +254,9 @@ class LeetifyProvider:
                     return ProviderResult(
                         provider="leetify",
                         status="PRIVATE",
+                        endpoint_category="profile_and_matches",
+                        player_identity=steam_id64,
+                        failure_reason="Player profile is private on Leetify",
                         summary="Leetify profile is set to private.",
                         data={"leetify_id": payload.get("id")},
                     )
@@ -245,7 +274,10 @@ class LeetifyProvider:
                         )
                         if mresp.status_code != 429:
                             break
-                        await _asyncio.sleep(_retry_delay_seconds(mresp, attempt, base=1.2))
+                        wait_m = _retry_delay_seconds(mresp, attempt, base=1.0)
+                        if wait_m is None:
+                            break
+                        await _asyncio.sleep(wait_m)
                     if mresp is not None and mresp.status_code == 200 and isinstance(mresp.json(), list):
                         matches_raw = mresp.json()
                         matches_status = "OK"
@@ -263,25 +295,27 @@ class LeetifyProvider:
             faceit_elo = _safe_int(ranks.get("faceit_elo")) if isinstance(ranks, dict) else None
             faceit_lvl = _safe_int(ranks.get("faceit")) if isinstance(ranks, dict) else None
 
-            aim_rating = round(_safe_float(rating.get("aim")), 2) if _safe_float(rating.get("aim")) is not None else None
-            utility_rating = round(_safe_float(rating.get("utility")), 2) if _safe_float(rating.get("utility")) is not None else None
+            aim_rating = _clamp_range(round(_safe_float(rating.get("aim")), 2), 0.0, 100.0) if _safe_float(rating.get("aim")) is not None else None
+            utility_rating = _clamp_range(round(_safe_float(rating.get("utility")), 2), 0.0, 100.0) if _safe_float(rating.get("utility")) is not None else None
             positioning_rating = (
-                round(_safe_float(rating.get("positioning")), 2)
+                _clamp_range(round(_safe_float(rating.get("positioning")), 2), 0.0, 100.0)
                 if _safe_float(rating.get("positioning")) is not None
                 else None
             )
 
             winrate_raw = _safe_float(payload.get("winrate"))
-            win_pct = round(winrate_raw * 100.0, 1) if (winrate_raw is not None and winrate_raw <= 1.0) else winrate_raw
+            win_pct = round(winrate_raw * 100.0, 1) if (winrate_raw is not None and 0.0 <= winrate_raw <= 1.0) else winrate_raw
+            win_pct = _clamp_range(win_pct, 0.0, 100.0) if win_pct is not None else None
 
             # Opening duel avg across CT & T
-            ct_open = _safe_float(stats.get("ct_opening_duel_success_percentage"))
-            t_open = _safe_float(stats.get("t_opening_duel_success_percentage"))
+            ct_open = _pct_100(_safe_float(stats.get("ct_opening_duel_success_percentage")))
+            t_open = _pct_100(_safe_float(stats.get("t_opening_duel_success_percentage")))
             open_vals = [v for v in (ct_open, t_open) if v is not None]
             opening_pct = round(sum(open_vals) / len(open_vals), 1) if open_vals else None
 
             clutch_raw = _safe_float(rating.get("clutch"))
-            clutch_pct = round(clutch_raw * 100.0, 1) if (clutch_raw is not None and clutch_raw <= 1.0) else clutch_raw
+            clutch_pct = round(clutch_raw * 100.0, 1) if (clutch_raw is not None and 0.0 <= clutch_raw <= 1.0) else clutch_raw
+            clutch_pct = _clamp_range(clutch_pct, 0.0, 100.0) if clutch_pct is not None else None
 
             # Aggregate real recent match stats (last 10 and up to 30 matches)
             parsed_matches: list[dict] = []
@@ -399,24 +433,24 @@ class LeetifyProvider:
             lifetime_stats = {
                 "matches_played": _safe_int(payload.get("total_matches")),
                 "win_rate": win_pct,
-                "kd_ratio": recent30.get("kd_ratio"),
-                "adr": recent30.get("adr"),
-                "hs_pct": recent30.get("hs_pct") or _safe_float(stats.get("accuracy_head")),
+                "kd_ratio": _clamp_range(recent30.get("kd_ratio"), 0.0, 10.0),
+                "adr": _clamp_range(recent30.get("adr"), 0.0, 300.0),
+                "hs_pct": _clamp_range(recent30.get("hs_pct") or _pct_100(_safe_float(stats.get("accuracy_head"))), 0.0, 100.0),
                 "opening_duel_pct": opening_pct,
-                "trade_kills_per_match": _safe_float(stats.get("trade_kills_success_percentage")),
-                "traded_deaths_pct": _safe_float(stats.get("traded_deaths_success_percentage")),
-                "utility_damage_per_round": _safe_float(stats.get("he_foes_damage_avg")),
-                "flash_assists_per_round": recent30.get("flash_assists_per_round"),
-                "enemies_flashed_per_round": recent30.get("enemies_flashed_per_round"),
+                "trade_kills_per_match": _pct_100(_safe_float(stats.get("trade_kills_success_percentage"))),
+                "traded_deaths_pct": _pct_100(_safe_float(stats.get("traded_deaths_success_percentage"))),
+                "utility_damage_per_round": _clamp_range(_safe_float(stats.get("he_foes_damage_avg")), 0.0, 150.0),
+                "flash_assists_per_round": _clamp_range(recent30.get("flash_assists_per_round"), 0.0, 10.0),
+                "enemies_flashed_per_round": _clamp_range(recent30.get("enemies_flashed_per_round"), 0.0, 20.0),
                 "clutch_win_pct": clutch_pct,
-                "consistency_score": _safe_float(stats.get("counter_strafing_good_shots_ratio")),
+                "consistency_score": _pct_100(_safe_float(stats.get("counter_strafing_good_shots_ratio"))),
                 "aim_rating": aim_rating,
                 "utility_rating": utility_rating,
                 "positioning_rating": positioning_rating,
-                "preaim": _safe_float(stats.get("preaim")),
-                "reaction_time_ms": _safe_float(stats.get("reaction_time_ms")),
-                "spotted_accuracy": _safe_float(stats.get("accuracy_enemy_spotted")),
-                "spray_accuracy": _safe_float(stats.get("spray_accuracy")),
+                "preaim": _clamp_range(_safe_float(stats.get("preaim")), 0.0, 180.0),
+                "reaction_time_ms": _clamp_range(_safe_float(stats.get("reaction_time_ms")), 50.0, 2500.0),
+                "spotted_accuracy": _pct_100(_safe_float(stats.get("accuracy_enemy_spotted"))),
+                "spray_accuracy": _pct_100(_safe_float(stats.get("spray_accuracy"))),
             }
 
             res_status = "PARTIAL" if matches_status in ("RATE_LIMITED", "UNAVAILABLE") else "OK"
@@ -424,6 +458,10 @@ class LeetifyProvider:
             return ProviderResult(
                 provider="leetify",
                 status=res_status,
+                endpoint_category="profile_and_matches",
+                player_identity=steam_id64,
+                failure_reason=f"Recent matches endpoint: {matches_status}" if res_status == "PARTIAL" else None,
+                retry_eligible=(res_status == "PARTIAL"),
                 summary=f"Leetify synced ({payload.get('total_matches') or 0} matches; Premier {premier or 'N/A'}){summary_note}.",
                 data={
                     "leetify_id": payload.get("id"),
