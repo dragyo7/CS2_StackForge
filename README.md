@@ -2,13 +2,67 @@
 
 StackForge helps an existing CS2 group select ten players, inspect real player data and separated integrity signals, generate balanced 5v5 teams across random maps (no map picker), negotiate swaps/remakes, and post a finalized Discord lineup.
 
-## Quick Start (How to Run)
+---
+
+## One-Click Local Startup & Shutdown (Windows V2 — Ports `8001` / `5174`)
+
+StackForge includes a zero-touch Windows launcher in the repository root that starts the V2 backend (`http://127.0.0.1:8001`) and frontend (`http://127.0.0.1:5174/`), works from any working directory, isolates logs to `logs/`, and safely tracks only its own processes in `.stackforge-pids.json`.
+
+### Start
+
+- **Double-click** `Start-StackForge.bat` in `D:\CS2_StackForge`, or run from any terminal:
+
+```cmd
+D:\CS2_StackForge\Start-StackForge.bat
+```
+
+Or via PowerShell:
+
+```powershell
+D:\CS2_StackForge\Start-StackForge.ps1
+```
+
+**What the launcher does:**
+1. Validates prerequisites (`backend\.venv\Scripts\python.exe`, `node`, `frontend\node_modules\vite\bin\vite.js`) without auto-reinstalling dependencies.
+2. Checks `http://127.0.0.1:8001/api/health` (`status == "ok"` and `map_policy == "random_no_picker"`) and `http://127.0.0.1:5174/`.
+3. **Reuses healthy StackForge instances** if already running (safe to click twice; never spawns duplicate servers).
+4. **Never kills unrelated apps** — if port `8001` or `5174` is bound by another application, it prints the owning process/command and exits cleanly without terminating it.
+5. Launches Uvicorn (`app.main:app`) in `D:\CS2_StackForge\backend` and Vite in `D:\CS2_StackForge\frontend` (`VITE_API_TARGET=http://127.0.0.1:8001`), waits for both health checks, writes `logs\{backend,frontend}.{out,err}.log`, records PIDs in `.stackforge-pids.json`, and opens `http://127.0.0.1:5174/`.
+
+### Stop
+
+```powershell
+D:\CS2_StackForge\Start-StackForge.bat -Stop
+# or
+D:\CS2_StackForge\Start-StackForge.ps1 -Stop
+```
+
+Only processes marked `managed: true` in `.stackforge-pids.json` (and verified as StackForge `uvicorn`/`vite` processes) are terminated. Externally started or unrelated processes are left untouched.
+
+### Optional Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `-Stop` | off | Stop launcher-managed StackForge backend/frontend processes cleanly |
+| `-NoBrowser` | off | Start and verify health without opening a browser tab |
+| `-BackendPort <port>` | `8001` | Override backend listen port & Vite `/api` proxy target |
+| `-FrontendPort <port>` | `5174` | Override frontend Vite listen port |
+
+### Troubleshooting
+
+- **Missing `.venv` or `node_modules`:** Create the virtualenv (`cd backend && python -m venv .venv && .\.venv\Scripts\pip install -r requirements.txt`) or install frontend deps (`cd frontend && npm install`), then re-run `Start-StackForge.bat`.
+- **Port conflict with another app:** Pass custom ports without touching other services, e.g. `.\Start-StackForge.ps1 -BackendPort 8011 -FrontendPort 5184`.
+- **Inspect runtime logs:** Check `logs\backend.out.log`, `logs\backend.err.log`, `logs\frontend.out.log`, and `logs\frontend.err.log`.
+
+---
+
+## Manual Run (Fallback)
 
 ### 1. Backend (FastAPI + SQLite)
 
 ```powershell
 cd d:\CS2_StackForge\backend
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 - Database: SQLite (`backend/stackforge.db`, automatically migrated on startup via `run_migrations`).
@@ -21,11 +75,11 @@ cd d:\CS2_StackForge\backend
 
 ```powershell
 cd d:\CS2_StackForge\frontend
-npm install
-npm run dev -- --host 127.0.0.1 --port 5173
+$env:VITE_API_TARGET = "http://127.0.0.1:8001"
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
 ```
 
-Open `http://127.0.0.1:5173/`.
+Open `http://127.0.0.1:5174/`.
 
 ### 3. Tests & Production Build
 
@@ -37,6 +91,8 @@ cd d:\CS2_StackForge\frontend
 npm run build
 ```
 
+---
+
 ## Documentation
 
 Read `Userflow.md`, `Rules.md`, then [docs/HANDOVER.md](docs/HANDOVER.md).
@@ -47,4 +103,4 @@ Read `Userflow.md`, `Rules.md`, then [docs/HANDOVER.md](docs/HANDOVER.md).
   - Keyed APIs (`NOT_CONFIGURED` until keys set): Official Steam `GetPlayerBans` (`STEAM_API_KEY`) and FACEIT Data API v4 (`FACEIT_API_KEY`).
   - Unsupported / never scraped: `csstats.gg` (ID link extraction only), `tracker.gg`, `faceitanalyser.com`, `trustfactor.gg`.
   - Matchmaking excludes `manual_rating`, separates scales (`norm_v2`, `stackforge_126_v2`), supports single-player refresh (`POST /api/players/{id}/refresh`), and runs a single-instance 24h/startup/login stale-profile scheduler.
-  - See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md), [docs/features/PLAYER_INTELLIGENCE.md](docs/features/PLAYER_INTELLIGENCE.md), and [docs/features/MATCH_EXPLANATIONS.md](docs/features/MATCH_EXPLANATIONS.md).
+  - See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md), [docs/AUDIT_AND_ROADMAP.md](docs/AUDIT_AND_ROADMAP.md), [docs/features/PLAYER_INTELLIGENCE.md](docs/features/PLAYER_INTELLIGENCE.md), and [docs/features/MATCH_EXPLANATIONS.md](docs/features/MATCH_EXPLANATIONS.md).

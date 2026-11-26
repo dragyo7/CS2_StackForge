@@ -40,6 +40,7 @@ Implemented and tested in `backend/` and `frontend/`:
 - `TESTING.md`: acceptance and test strategy.
 - `ROLLBACK.md`: rollback/migration/release plan.
 - `INTEGRATIONS.md`: external services, usage, access status and licensing checklist.
+- `AUDIT_AND_ROADMAP.md`: verified end-to-end provider/metric audit (Part B), open-source CS2 ecosystem research (`cs-demo-manager`, `awpy`, `demoparser2`, `CSManager`, Leetify API v3), and prioritized product roadmap.
 - `features/`: feature specifications.
 - `bugs/`: known issues and triage template.
 - `defense/`: integrity/anti-cheat methodology and review policy.

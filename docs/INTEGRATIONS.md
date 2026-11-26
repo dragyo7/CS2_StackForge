@@ -30,11 +30,11 @@ StackForge never injects into CS2, reads/writes game memory, modifies game files
 - **Product:** Steam Web API.
 - **Endpoints:** `ISteamUser/ResolveVanityURL/v1`, `ISteamUser/GetPlayerSummaries/v2`, `ISteamUser/GetPlayerBans/v1`.
 - **Use:** Resolve vanity URLs to canonical SteamID64; refresh public persona name/avatar and record alias changes in `player_aliases`; check VAC/game/community/economy ban response.
-- **Auth:** Server-side `STEAM_API_KEY` env var. Steam OpenID identity login remains deferred.
+- **Auth:** Server-side `STEAM_API_KEY` env var (`ISteamUser/*`); falls back cleanly to public `https://steamcommunity.com/id/{vanity}/?xml=1` and `/profiles/{sid}/?xml=1` when keyless. Steam OpenID identity login remains deferred.
 - **Limits/caveats:** Public profile fields only; API access and key terms apply. `GetPlayerBans` returns ban counts/status and may include app-related details; never infer CS2 cheating from a generic count alone. Steam's CS2 game-ban policy includes cheating, matchmaking rank manipulation, botting/automation and interference with game systems.
 - **Docs:** https://partner.steamgames.com/doc/webapi/ISteamUser
 - **Policy:** https://help.steampowered.com/en/faqs/view/4E54-0B96-D0A4-1557
-- **Status:** Adapter implemented (`backend/app/providers/steam.py`) with bounded timeouts and `NOT_CONFIGURED`/`UNAVAILABLE` fallback; live API calls untested pending `STEAM_API_KEY`.
+- **Status:** Adapter implemented (`backend/app/providers/steam.py`); `?xml=1` profile/vanity resolution is active and live-tested keyless, while official `GetPlayerBans` stays `NOT_CONFIGURED` until `STEAM_API_KEY` is provided.
 
 ### FACEIT
 - **Product:** FACEIT Data API v4.
@@ -44,17 +44,17 @@ StackForge never injects into CS2, reads/writes game memory, modifies game files
 - **Limits/caveats:** Publicly available data only, API rate limits and HTTP 401/403/404/429/503 handling. Verify developer terms before public/commercial launch.
 - **Docs:** https://docs.faceit.com/docs/data-api/
 - **Player docs:** https://docs.faceit.com/docs/data-api/data/
-- **Status:** Adapter implemented (`backend/app/providers/external.py`) with `NOT_CONFIGURED`/`UNAVAILABLE` fallback; live API calls untested pending `FACEIT_API_KEY`.
+- **Status:** Adapter implemented (`backend/app/providers/external.py`) with `NOT_CONFIGURED`/`UNAVAILABLE` fallback; live API calls untested pending `FACEIT_API_KEY` (Steam-linked FACEIT level/ELO still arrives via Leetify `ranks` when exposed).
 
 ### Leetify
-- **Product:** Leetify Public CS API.
-- **Endpoint:** `GET /v3/profile?steam64_id={steam64_id}`.
-- **Use:** Fetch Leetify rating, Premier rank where exposed, and CS2 stats (`total_matches`, `winrate`, `kd_ratio`, `dpr`/`adr`, `kast`, `hs_pct`, `opening_duel_success_pct`, `he_foes_damage_avg`, `flash_assist`, `clutch_win_pct`) stored in `player_stat_snapshots`.
-- **Auth:** Server-side `LEETIFY_API_KEY` env var (`_leetify_key` header); public API aligns with Leetify privacy settings.
-- **Limits/caveats:** Follow developer guidelines and attribution. Do not imply affiliation or sponsorship. Do not scrape private data.
+- **Product:** Leetify Public CS API v3.
+- **Endpoints:** `GET /v3/profile?steam64_id={steam64_id}` and `GET /v3/profile/matches?steam64_id={steam64_id}`.
+- **Use:** Fetch Leetify rating, Premier CSR, FACEIT ELO/level (when linked), sub-ratings (`aim`, `utility`, `positioning`, `clutch`), mechanics (`preaim`, `reaction_time_ms`, `accuracy_enemy_spotted`, `spray_accuracy`, `counter_strafing_good_shots_ratio`), opening duels, trades, utility dmg, flash stats, recent-10/30 aggregates, recent match history (`<=15`), and private per-map deltas (`PARTIAL` if profile succeeds while matches fail).
+- **Auth:** Optional server-side `LEETIFY_API_KEY` env var (`_leetify_key` header); works keyless in read-only mode with 3-attempt `Retry-After`/exponential backoff on HTTP 429.
+- **Limits/caveats:** Keyless mode incurs stricter throttling (`429 RATE_LIMITED`). `kast` is not returned on public v3 endpoints and remains `Unavailable`. Follow developer guidelines and attribution; do not scrape private data.
 - **Docs:** https://api-public-docs.cs-prod.leetify.com/
 - **Developer guidelines:** https://leetify.com/app/developer (check current in-product terms)
-- **Status:** Adapter implemented (`backend/app/providers/external.py`) with `NOT_CONFIGURED`/`UNAVAILABLE` fallback; live API calls untested pending `LEETIFY_API_KEY`.
+- **Status:** Implemented & Live-Tested (`backend/app/providers/external.py`).
 
 ### Premier rating / history sources
 - **Valve public API:** No dependable supported public endpoint for complete Premier rating/history is assumed by this project.
@@ -66,12 +66,12 @@ StackForge never injects into CS2, reads/writes game memory, modifies game files
 
 ### CSWatch
 - **Product:** CSWatch public JSON API and embeds.
-- **Use:** Optional external reputation/conviction signal; display source attribution and direct profile link; store response timestamp and provider label separately from Steam enforcement.
+- **Use:** Separated third-party reputation/risk signal (`THIRD_PARTY_REPUTATION`) with source attribution and direct profile link; stored with observation timestamp independently of Steam enforcement.
 - **API:** https://www.cswatch.gg/developers
 - **Endpoint documented:** `GET https://cswatch.gg/api/public/player/{steamId}`
-- **Published fair-use statement:** up to 30 player requests/minute/IP; attribution link required. Keyed API available on request.
-- **Caveats:** Third-party reputation, not Valve truth. Review methodology and privacy/terms before commercial use. Do not mirror public accusations without policy/legal review.
-- **Status:** Optional adapter, pending legal/product review.
+- **Published fair-use statement:** up to 30 player requests/minute/IP (StackForge enforces a 25/min sliding window cap); attribution link required. Keyed API available on request.
+- **Caveats:** Third-party reputation, not Valve truth. Review methodology and privacy/terms before commercial launch or public/commercial redistribution.
+- **Status:** Implemented & Live-Tested (`backend/app/providers/cswatch.py`).
 
 ### CS2SUS
 - **Product:** Website for CS2 stats and demo-derived suspiciousness signals.
