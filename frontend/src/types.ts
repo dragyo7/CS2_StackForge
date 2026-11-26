@@ -184,6 +184,15 @@ export interface StatSnapshot {
   clutch_win_pct: number | null;
   multi_kill_rate: number | null;
   consistency_score: number | null;
+  aim_rating?: number | null;
+  utility_rating?: number | null;
+  positioning_rating?: number | null;
+  preaim?: number | null;
+  reaction_time_ms?: number | null;
+  spotted_accuracy?: number | null;
+  spray_accuracy?: number | null;
+  enemies_flashed_per_round?: number | null;
+  traded_deaths_pct?: number | null;
   freshness: string;
   is_sample_demo: boolean;
   captured_at: string;
@@ -234,12 +243,16 @@ export interface Player {
   refresh_error: string | null;
   profile_visibility: string;
   stats_visibility: string;
-  manual_rating: number;
+  manual_rating?: number | null;
   premier_rating: number | null;
   premier_source: string | null;
   premier_season: string | null;
   faceit_elo: number | null;
+  faceit_level?: number | null;
   leetify_rating: number | null;
+  aim_rating?: number | null;
+  utility_rating?: number | null;
+  positioning_rating?: number | null;
   recent_form: number | null;
   primary_role: RoleType | null;
   secondary_role: RoleType | null;
@@ -247,7 +260,8 @@ export interface Player {
   is_seeded: boolean;
   is_archived?: boolean;
   stats_stale?: boolean;
-  normalized_strength: number;
+  data_status?: string;
+  normalized_strength: number | null;
   confidence: number;
   strength_band: string;
   missing_sources: string[];
@@ -259,6 +273,14 @@ export interface Player {
   card: PlayerCard | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ProviderRefreshResult {
+  provider: string;
+  status: string;
+  summary: string;
+  cache_hit: boolean;
+  fetched_at: string | null;
 }
 
 export interface PlayerProfile {
@@ -273,9 +295,11 @@ export interface PlayerProfile {
 
 export interface RefreshProfileResponse {
   profile: PlayerProfile;
+  status?: string;
   cache_hit: boolean;
   alias_changed: boolean;
   message: string;
+  provider_results?: ProviderRefreshResult[];
 }
 
 export interface PlayerCompare {
@@ -343,12 +367,12 @@ export interface ProposalSnapshotPlayer {
   display_name: string;
   steam_id64: string | null;
   identity_status: string;
-  manual_rating: number;
+  manual_rating?: number | null;
   premier_rating: number | null;
   faceit_elo: number | null;
   leetify_rating: number | null;
   primary_role: RoleType | null;
-  normalized_strength: number;
+  normalized_strength: number | null;
   strength_band: string;
   confidence: number;
   sources_used: string[];

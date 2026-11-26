@@ -60,8 +60,10 @@ export const MatchRoomView: React.FC<Props> = ({
   const [showQuickAdd, setShowQuickAdd] = useState(false);
   const [quickName, setQuickName] = useState('');
   const [quickSteam, setQuickSteam] = useState('');
-  const [quickRating, setQuickRating] = useState('55');
   const [quickRole, setQuickRole] = useState<RoleType | ''>('');
+  const [pickerSort, setPickerSort] = useState<'strength' | 'premier' | 'leetify' | 'name'>('strength');
+  const [playerRefreshBanner, setPlayerRefreshBanner] = useState<string | null>(null);
+  const [refreshingPlayerId, setRefreshingPlayerId] = useState<string | null>(null);
 
   // Replace player state
   const [replacingId, setReplacingId] = useState<string | null>(null);
@@ -171,7 +173,6 @@ export const MatchRoomView: React.FC<Props> = ({
         display_name: quickName.trim(),
         steam_id64: isRawId ? trimmedSteam : null,
         steam_profile_url: isUrl ? trimmedSteam : null,
-        manual_rating: Number(quickRating) || 55,
         primary_role: quickRole || null,
       });
       await onRefreshPlayers();
@@ -181,7 +182,6 @@ export const MatchRoomView: React.FC<Props> = ({
       }
       setQuickName('');
       setQuickSteam('');
-      setQuickRating('55');
       setQuickRole('');
       setShowQuickAdd(false);
     } catch (err) {
@@ -268,6 +268,28 @@ export const MatchRoomView: React.FC<Props> = ({
     } catch (err) {
       onError(err instanceof ApiError ? err.message : 'Failed to remove constraint.');
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleRefreshSinglePlayer = async (playerId: string) => {
+    setBusy(true);
+    setRefreshingPlayerId(playerId);
+    setPlayerRefreshBanner(null);
+    try {
+      const res = await api.refreshPlayerProfile(playerId, true);
+      await onRefreshPlayers();
+      const refreshedRoom = await api.getRoom(room.id);
+      onRoomUpdated(refreshedRoom);
+      const summary =
+        res.provider_results && res.provider_results.length > 0
+          ? res.provider_results.map((pr) => `${pr.provider}:${pr.status}`).join(' • ')
+          : res.message;
+      setPlayerRefreshBanner(`${res.profile.player.display_name} [${res.status || 'DONE'}]: ${summary}`);
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Individual refresh failed.');
+    } finally {
+      setRefreshingPlayerId(null);
       setBusy(false);
     }
   };
@@ -492,23 +514,34 @@ export const MatchRoomView: React.FC<Props> = ({
     setTimeout(() => setCopiedShare(false), 1800);
   };
 
-  const availableToPick = players.filter((p) => {
-    const q = search.trim().toLowerCase();
-    if (!q) return true;
-    const aliasHit = p.aliases.some(
-      (a) =>
-        a.alias_name.toLowerCase().includes(q) ||
-        (a.previous_name && a.previous_name.toLowerCase().includes(q)),
-    );
-    return (
-      p.display_name.toLowerCase().includes(q) ||
-      (p.steam_id64 && p.steam_id64.includes(q)) ||
-      (p.steam_persona_name && p.steam_persona_name.toLowerCase().includes(q)) ||
-      (p.vanity_name && p.vanity_name.toLowerCase().includes(q)) ||
-      (p.primary_role && p.primary_role.toLowerCase().includes(q)) ||
-      aliasHit
-    );
-  });
+  const availableToPick = players
+    .filter((p) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      const aliasHit = p.aliases.some(
+        (a) =>
+          a.alias_name.toLowerCase().includes(q) ||
+          (a.previous_name && a.previous_name.toLowerCase().includes(q)),
+      );
+      return (
+        p.display_name.toLowerCase().includes(q) ||
+        (p.steam_id64 && p.steam_id64.includes(q)) ||
+        (p.steam_persona_name && p.steam_persona_name.toLowerCase().includes(q)) ||
+        (p.vanity_name && p.vanity_name.toLowerCase().includes(q)) ||
+        (p.primary_role && p.primary_role.toLowerCase().includes(q)) ||
+        aliasHit
+      );
+    })
+    .slice()
+    .sort((a, b) => {
+      if (pickerSort === 'name') return a.display_name.localeCompare(b.display_name);
+      if (pickerSort === 'premier') return (b.premier_rating ?? -1) - (a.premier_rating ?? -1);
+      if (pickerSort === 'leetify') return (b.leetify_rating ?? -999) - (a.leetify_rating ?? -999);
+      const sa = a.normalized_strength ?? -1;
+      const sb = b.normalized_strength ?? -1;
+      if (sb !== sa) return sb - sa;
+      return b.confidence - a.confidence || a.display_name.localeCompare(b.display_name);
+    });
 
   const handleResetSelection = async () => {
     if (isFinalized || selectedIds.length === 0) return;
@@ -543,12 +576,10 @@ export const MatchRoomView: React.FC<Props> = ({
         const live = playerMap.get(pid);
         const name = snap?.display_name || live?.display_name || pid;
         const role = snap?.primary_role || live?.primary_role;
-        const strength = snap?.normalized_strength ?? live?.normalized_strength ?? 50;
-        const band = snap?.strength_band || live?.strength_band || 'Solid';
-        const conf = snap?.confidence ?? live?.confidence ?? 0.55;
-        const isManualOnly = snap
-          ? snap.sources_used.length === 1 && snap.sources_used[0] === 'manual'
-          : (live?.missing_sources.length ?? 0) >= 3;
+        const strength = snap ? snap.normalized_strength : live?.normalized_strength;
+        const band = snap?.strength_band || live?.strength_band || 'Insufficient Data';
+        const conf = snap?.confidence ?? live?.confidence ?? 0;
+        const isInsufficient = strength == null || band === 'Insufficient Data';
         const currentLock = lockMap.get(pid) || null;
         const isPicked = (teamLabel === 'A' && swapPickA === pid) || (teamLabel === 'B' && swapPickB === pid);
 
@@ -572,8 +603,8 @@ export const MatchRoomView: React.FC<Props> = ({
                   )}
                 </div>
                 <div className="small muted" style={{ marginTop: '0.15rem' }}>
-                  <span className="mono">{strength.toFixed(1)}</span> ({band}) • Conf {Math.round(conf * 100)}%
-                  {isManualOnly ? ' • Manual baseline' : ''}
+                  <span className="mono">{strength != null ? strength.toFixed(1) : 'Unavailable'}</span> ({band}) • Conf {Math.round(conf * 100)}%
+                  {isInsufficient ? ' • Low/No External Stats' : ''}
                 </div>
               </div>
             </div>
@@ -693,7 +724,8 @@ export const MatchRoomView: React.FC<Props> = ({
                         {p.primary_role && <span className="badge">{p.primary_role}</span>}
                       </div>
                       <div className="small muted mono">
-                        Str {p.normalized_strength.toFixed(1)} • {p.steam_id64 ? 'SteamID' : 'Manual'}
+                        {p.normalized_strength != null ? `Str ${p.normalized_strength.toFixed(1)}` : 'Insufficient Data'} •{' '}
+                        {p.steam_id64 ? 'SteamID' : 'Unlinked'}
                       </div>
                       {safetyWarnings.length > 0 && (
                         <div className="row" style={{ gap: '0.25rem', marginTop: '0.22rem', flexWrap: 'wrap' }}>
@@ -712,6 +744,14 @@ export const MatchRoomView: React.FC<Props> = ({
                     </div>
                     {!isFinalized && (
                       <div className="row" style={{ gap: '0.25rem' }}>
+                        <button
+                          className="btn btn-xs"
+                          onClick={() => handleRefreshSinglePlayer(p.id)}
+                          disabled={busy || (!p.steam_id64 && !p.vanity_name)}
+                          title="Refresh only this player"
+                        >
+                          <RefreshCw size={11} />
+                        </button>
                         <button
                           className={`btn btn-xs ${entry.locked_team === 'A' ? 'btn-primary' : ''}`}
                           onClick={() => handleLock(p.id, entry.locked_team === 'A' ? null : 'A')}
@@ -795,16 +835,6 @@ export const MatchRoomView: React.FC<Props> = ({
                   onChange={(e) => setQuickSteam(e.target.value)}
                 />
                 <div className="row">
-                  <input
-                    className="input mono"
-                    type="number"
-                    min={1}
-                    max={100}
-                    style={{ flex: 1 }}
-                    value={quickRating}
-                    onChange={(e) => setQuickRating(e.target.value)}
-                    placeholder="Rating 1-100"
-                  />
                   <select
                     className="select"
                     style={{ flex: 1 }}
@@ -826,18 +856,41 @@ export const MatchRoomView: React.FC<Props> = ({
             </form>
           )}
 
-          <div style={{ position: 'relative', marginBottom: '0.5rem' }}>
-            <Search
-              size={14}
-              style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}
-            />
-            <input
-              className="input"
-              style={{ paddingLeft: '2rem', fontSize: '0.82rem' }}
-              placeholder="Filter saved players..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          {playerRefreshBanner && (
+            <div className="alert alert-ok" style={{ marginBottom: '0.5rem', padding: '0.45rem 0.6rem' }}>
+              <span className="small">{playerRefreshBanner}</span>
+              <button className="btn btn-xs" onClick={() => setPlayerRefreshBanner(null)}>
+                OK
+              </button>
+            </div>
+          )}
+
+          <div className="row" style={{ gap: '0.4rem', marginBottom: '0.5rem' }}>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <Search
+                size={14}
+                style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }}
+              />
+              <input
+                className="input"
+                style={{ paddingLeft: '2rem', fontSize: '0.82rem' }}
+                placeholder="Filter saved players..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <select
+              className="select"
+              style={{ width: 'auto', fontSize: '0.78rem', padding: '0.35rem 0.5rem' }}
+              value={pickerSort}
+              onChange={(e) => setPickerSort(e.target.value as 'strength' | 'premier' | 'leetify' | 'name')}
+              title="Sort player picker"
+            >
+              <option value="strength">Rank: Competitive</option>
+              <option value="premier">Rank: Premier CSR</option>
+              <option value="leetify">Rank: Leetify</option>
+              <option value="name">Sort: Name</option>
+            </select>
           </div>
 
           <div className="stack" style={{ gap: '0.35rem', maxHeight: '260px', overflowY: 'auto' }}>
@@ -853,25 +906,36 @@ export const MatchRoomView: React.FC<Props> = ({
                         {p.primary_role && <span className="badge">{p.primary_role}</span>}
                       </div>
                       <div className="small muted mono">
-                        Rating {p.normalized_strength.toFixed(1)}
+                        {p.normalized_strength != null ? `Rating ${p.normalized_strength.toFixed(1)}` : 'Insufficient Data'}
                         {p.premier_rating != null ? ` • Prem ${p.premier_rating.toLocaleString()}` : ''}
                       </div>
                     </div>
                   </div>
-                  {replacingId && !inRoom ? (
-                    <button className="btn btn-xs btn-primary" onClick={() => handleReplace(p.id)} disabled={busy}>
-                      Swap In
-                    </button>
-                  ) : (
+                  <div className="row" style={{ gap: '0.25rem' }}>
                     <button
-                      className={`btn btn-xs ${inRoom ? 'btn-danger' : 'btn-primary'}`}
-                      disabled={busy || isFinalized || (!inRoom && selectedIds.length >= 10)}
-                      onClick={() => handleTogglePlayer(p.id)}
+                      className="btn btn-xs"
+                      onClick={() => handleRefreshSinglePlayer(p.id)}
+                      disabled={busy || (!p.steam_id64 && !p.vanity_name)}
+                      title="Refresh this player only"
                     >
-                      {inRoom ? <UserMinus size={12} /> : <UserPlus size={12} />}
-                      {inRoom ? 'Remove' : 'Add'}
+                      <RefreshCw size={11} />
+                      {refreshingPlayerId === p.id ? '...' : ''}
                     </button>
-                  )}
+                    {replacingId && !inRoom ? (
+                      <button className="btn btn-xs btn-primary" onClick={() => handleReplace(p.id)} disabled={busy}>
+                        Swap In
+                      </button>
+                    ) : (
+                      <button
+                        className={`btn btn-xs ${inRoom ? 'btn-danger' : 'btn-primary'}`}
+                        disabled={busy || isFinalized || (!inRoom && selectedIds.length >= 10)}
+                        onClick={() => handleTogglePlayer(p.id)}
+                      >
+                        {inRoom ? <UserMinus size={12} /> : <UserPlus size={12} />}
+                        {inRoom ? 'Remove' : 'Add'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

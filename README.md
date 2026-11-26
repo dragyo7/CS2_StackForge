@@ -42,4 +42,9 @@ npm run build
 Read `Userflow.md`, `Rules.md`, then [docs/HANDOVER.md](docs/HANDOVER.md).
 
 - **Critical product rule:** maps are random. There is no map picker or map veto. Map-specific performance is used privately to make team splits robust across the active map pool.
-- **External integrations:** see [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) for active APIs (`Steam XML`, `Leetify Public v3`, `CSWatch Public API`, `Google Sheets CSV`), keyed-only APIs (`Steam Bans`, `FACEIT v4`), and link-only/unsupported sites (no scraping of `csstats.gg`, `tracker.gg`, `faceitanalyser.com`, or `trustfactor.gg`).
+- **External integrations & Player Intelligence V2:**
+  - Read-only APIs active without keys: **Steam Community XML** (`?xml=1` personas/avatars/vanity), **Leetify Public CS API v3** (`premier`, `leetify`, `aim`, `utility`, `positioning`, `preaim`, `reaction_time_ms`, accuracy, combat & recent matches with `Retry-After`/429 backoff), **CSWatch Public API** (25/min cap), and **Google Sheets CSV**.
+  - Keyed APIs (`NOT_CONFIGURED` until keys set): Official Steam `GetPlayerBans` (`STEAM_API_KEY`) and FACEIT Data API v4 (`FACEIT_API_KEY`).
+  - Unsupported / never scraped: `csstats.gg` (ID link extraction only), `tracker.gg`, `faceitanalyser.com`, `trustfactor.gg`.
+  - Matchmaking excludes `manual_rating`, separates scales (`norm_v2`, `stackforge_126_v2`), supports single-player refresh (`POST /api/players/{id}/refresh`), and runs a single-instance 24h/startup/login stale-profile scheduler.
+  - See [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md), [docs/features/PLAYER_INTELLIGENCE.md](docs/features/PLAYER_INTELLIGENCE.md), and [docs/features/MATCH_EXPLANATIONS.md](docs/features/MATCH_EXPLANATIONS.md).

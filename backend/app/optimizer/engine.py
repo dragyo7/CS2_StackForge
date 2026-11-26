@@ -7,7 +7,7 @@ from typing import Iterable
 
 from app.optimizer.normalizer import NORMALIZER_VERSION, NormalizedPlayer, PlayerInput, normalize_player
 
-ALGORITHM_VERSION = "stackforge_126_v1"
+ALGORITHM_VERSION = "stackforge_126_v2"
 MAP_POOL_VERSION = "active_duty_v1"
 # Internal active map pool prior (never exposed as a map picker or recommendation)
 INTERNAL_MAP_POOL: tuple[str, ...] = (
@@ -161,42 +161,41 @@ def _orientation_satisfies(
 
 
 def _role_counts(players: list[NormalizedPlayer]) -> dict[str, int]:
-    counts: dict[str, int] = {
-        "Entry": 0,
-        "Rifler": 0,
-        "AWPer": 0,
-        "Support": 0,
-        "Lurker": 0,
-        "IGL": 0,
-        "Unassigned": 0,
-    }
+    counts: dict[str, int] = {"AWPer": 0, "IGL": 0, "Entry": 0, "Support": 0, "Rifler": 0, "Lurker": 0}
     for p in players:
         if p.primary_role and p.primary_role in counts:
             counts[p.primary_role] += 1
-        else:
-            counts["Unassigned"] += 1
     return counts
 
 
 def _role_imbalance_penalty(roles_a: dict[str, int], roles_b: dict[str, int]) -> float:
-    # Penalize asymmetric key tactical roles (especially AWPer, IGL, Entry, Support)
-    weights = {
-        "AWPer": 2.4,
-        "IGL": 1.8,
-        "Entry": 1.3,
-        "Support": 1.3,
-        "Rifler": 0.6,
-        "Lurker": 0.7,
-    }
+    """Rewards having complementary core roles (AWPer, IGL, Entry, Support) across teams."""
     penalty = 0.0
-    for role, w in weights.items():
-        diff = abs(roles_a.get(role, 0) - roles_b.get(role, 0))
-        # Extra penalty if one side has 2+ AWPers and the other has 0
-        if role == "AWPer" and ((roles_a["AWPer"] >= 2 and roles_b["AWPer"] == 0) or (roles_b["AWPer"] >= 2 and roles_a["AWPer"] == 0)):
-            penalty += 4.0
-        else:
-            penalty += w * max(0, diff - 0) * 0.45
+    for role, weight in (("AWPer", 1.5), ("IGL", 1.2), ("Entry", 1.0), ("Support", 0.9)):
+        total = roles_a.get(role, 0) + roles_b.get(role, 0)
+        if total == 0:
+            continue
+        penalty += abs(roles_a.get(role, 0) - roles_b.get(role, 0)) * weight
+        if roles_a.get(role, 0) == 0 or roles_b.get(role, 0) == 0:
+            if total >= 2:
+                penalty += weight * 0.8
     return round(penalty, 3)
+
+
+def _coverage_weighted_gap(
+    team_a: list[NormalizedPlayer],
+    team_b: list[NormalizedPlayer],
+    attr: str,
+) -> tuple[float, float]:
+    """Returns (absolute gap between side means, coverage fraction in [0, 1])."""
+    vals_a = [getattr(p, attr) for p in team_a if getattr(p, attr) is not None]
+    vals_b = [getattr(p, attr) for p in team_b if getattr(p, attr) is not None]
+    total_tracked = len(vals_a) + len(vals_b)
+    if not vals_a or not vals_b:
+        return 0.0, 0.0
+    coverage = total_tracked / 10.0
+    gap = abs((sum(vals_a) / len(vals_a)) - (sum(vals_b) / len(vals_b)))
+    return round(gap, 3), round(coverage, 2)
 
 
 def evaluate_split(
@@ -204,20 +203,41 @@ def evaluate_split(
     team_b_ids: tuple[str, ...],
     normalized: dict[str, NormalizedPlayer],
     seed: int,
+    neutral_prior: float | None = None,
 ) -> EvaluatedSplit:
     team_a_players = [normalized[pid] for pid in team_a_ids]
     team_b_players = [normalized[pid] for pid in team_b_ids]
 
-    sum_a = sum(p.normalized_strength for p in team_a_players)
-    sum_b = sum(p.normalized_strength for p in team_b_players)
-    avg_a = round(sum_a / 5.0, 2)
-    avg_b = round(sum_b / 5.0, 2)
+    if neutral_prior is None:
+        all_rated = [p.normalized_strength for p in normalized.values() if p.normalized_strength is not None]
+        neutral_prior = round(sum(all_rated) / len(all_rated), 2) if all_rated else 50.0
+
+    def _effective_strength(p: NormalizedPlayer) -> float:
+        return p.normalized_strength if p.normalized_strength is not None else neutral_prior
+
+    eff_a = [_effective_strength(p) for p in team_a_players]
+    eff_b = [_effective_strength(p) for p in team_b_players]
+    avg_a = round(sum(eff_a) / 5.0, 2)
+    avg_b = round(sum(eff_b) / 5.0, 2)
     strength_diff = round(abs(avg_a - avg_b), 2)
 
-    # Top-end skill parity (prevent 1 carry + 4 weak vs 5 solid from hiding behind equal average)
-    top2_a = sum(sorted((p.normalized_strength for p in team_a_players), reverse=True)[:2]) / 2.0
-    top2_b = sum(sorted((p.normalized_strength for p in team_b_players), reverse=True)[:2]) / 2.0
+    # Split insufficient-data players evenly so one side never receives all unrated accounts
+    unrated_a = sum(1 for p in team_a_players if p.normalized_strength is None)
+    unrated_b = sum(1 for p in team_b_players if p.normalized_strength is None)
+    unknown_count_gap = abs(unrated_a - unrated_b)
+
+    # Top-end skill parity among rated players
+    top2_a = sum(sorted(eff_a, reverse=True)[:2]) / 2.0
+    top2_b = sum(sorted(eff_b, reverse=True)[:2]) / 2.0
     top_carry_gap = round(abs(top2_a - top2_b), 3)
+
+    # Coverage-weighted multi-dimensional CS2 balance
+    aim_gap, aim_cov = _coverage_weighted_gap(team_a_players, team_b_players, "aim_score")
+    util_gap, util_cov = _coverage_weighted_gap(team_a_players, team_b_players, "utility_score")
+    entry_gap, entry_cov = _coverage_weighted_gap(team_a_players, team_b_players, "entry_score")
+    trade_gap, trade_cov = _coverage_weighted_gap(team_a_players, team_b_players, "trade_score")
+    clutch_gap, clutch_cov = _coverage_weighted_gap(team_a_players, team_b_players, "clutch_score")
+    cons_gap, cons_cov = _coverage_weighted_gap(team_a_players, team_b_players, "consistency_score")
 
     # Role balance
     roles_a = _role_counts(team_a_players)
@@ -225,11 +245,15 @@ def evaluate_split(
     role_penalty = _role_imbalance_penalty(roles_a, roles_b)
 
     # Recent form balance
-    form_a = sum(p.recent_form_normalized for p in team_a_players) / 5.0
-    form_b = sum(p.recent_form_normalized for p in team_b_players) / 5.0
-    form_gap = round(abs(form_a - form_b), 3)
+    form_a_vals = [p.recent_form_normalized for p in team_a_players if p.has_recent_form]
+    form_b_vals = [p.recent_form_normalized for p in team_b_players if p.has_recent_form]
+    if form_a_vals and form_b_vals:
+        form_cov = (len(form_a_vals) + len(form_b_vals)) / 10.0
+        form_gap = round(abs((sum(form_a_vals) / len(form_a_vals)) - (sum(form_b_vals) / len(form_b_vals))) * form_cov, 3)
+    else:
+        form_gap = 0.0
 
-    # Hidden map-pool robustness across active duty maps (equal weights 1/7)
+    # Internal active map-pool robustness (equal weights 1/7; never exposes a map picker)
     has_map_data = any(bool(p.map_adjustments) for p in team_a_players + team_b_players)
     if has_map_data:
         map_gaps = []
@@ -239,17 +263,24 @@ def evaluate_split(
             map_gaps.append(abs(ma - mb))
         expected_map_gap = round(sum(map_gaps) / len(map_gaps), 3)
         worst_map_gap = round(max(map_gaps), 3)
-        map_robustness_penalty = round(0.25 * expected_map_gap + 0.15 * worst_map_gap, 3)
+        map_robustness_penalty = round(0.22 * expected_map_gap + 0.14 * worst_map_gap, 3)
     else:
         expected_map_gap = strength_diff
         worst_map_gap = strength_diff
         map_robustness_penalty = 0.0
 
-    # Composite deterministic objective (lower is better)
+    # Calibrated composite objective (missing dimensions automatically shrink via coverage weights)
     objective_score = round(
-        strength_diff * 2.2
+        strength_diff * 2.4
+        + unknown_count_gap * 3.5
         + top_carry_gap * 0.45
-        + role_penalty * 0.65
+        + aim_gap * (0.28 * aim_cov)
+        + util_gap * (0.24 * util_cov)
+        + entry_gap * (0.14 * entry_cov)
+        + trade_gap * (0.12 * trade_cov)
+        + clutch_gap * (0.10 * clutch_cov)
+        + cons_gap * (0.10 * cons_cov)
+        + role_penalty * 0.55
         + form_gap * 0.35
         + map_robustness_penalty,
         4,
@@ -258,17 +289,27 @@ def evaluate_split(
     pkey = make_partition_key(team_a_ids, team_b_ids)
     tie_breaker = hashlib.sha256(f"{seed}:{pkey}".encode("utf-8")).hexdigest()[:16]
 
+    def _sort_key(pid: str) -> tuple[float, float, str]:
+        p = normalized[pid]
+        return (-(p.normalized_strength if p.normalized_strength is not None else -1.0), -p.confidence, p.display_name)
+
     return EvaluatedSplit(
         partition_key=pkey,
-        team_a_ids=tuple(sorted(team_a_ids, key=lambda pid: -normalized[pid].normalized_strength)),
-        team_b_ids=tuple(sorted(team_b_ids, key=lambda pid: -normalized[pid].normalized_strength)),
+        team_a_ids=tuple(sorted(team_a_ids, key=_sort_key)),
+        team_b_ids=tuple(sorted(team_b_ids, key=_sort_key)),
         team_a_strength=avg_a,
         team_b_strength=avg_b,
         strength_diff=strength_diff,
         objective_score=objective_score,
         objective_components={
             "strength_gap": strength_diff,
+            "unknown_count_gap": float(unknown_count_gap),
             "top_carry_gap": top_carry_gap,
+            "aim_gap": round(aim_gap * aim_cov, 3),
+            "utility_gap": round(util_gap * util_cov, 3),
+            "entry_gap": round(entry_gap * entry_cov, 3),
+            "trade_gap": round(trade_gap * trade_cov, 3),
+            "clutch_gap": round(clutch_gap * clutch_cov, 3),
             "role_imbalance": role_penalty,
             "form_imbalance": form_gap,
             "map_pool_penalty": map_robustness_penalty,
@@ -304,50 +345,57 @@ def _team_cs2_notes(
 ) -> list[str]:
     notes: list[str] = []
 
-    adr_s, adr_n = _avg_metric(side_players, "adr")
-    adr_o, _ = _avg_metric(other_players, "adr")
-    kd_s, _ = _avg_metric(side_players, "kd_ratio")
-    if adr_n >= 2 and adr_s is not None:
-        if adr_o is not None and adr_s >= adr_o + 3.0:
-            notes.append(f"Higher firepower output ({adr_s:.1f} avg ADR{f', {kd_s:.2f} K/D' if kd_s else ''} across {adr_n} tracked players).")
-        elif adr_s >= 76.0:
-            notes.append(f"Reliable damage-output core ({adr_s:.1f} avg ADR across {adr_n} tracked players).")
-        else:
-            notes.append(f"Steadier mid-round spacing ({adr_s:.1f} avg ADR across {adr_n} tracked players).")
+    aim_s, aim_n = _avg_metric(side_players, "aim_rating")
+    aim_o, aim_no = _avg_metric(other_players, "aim_rating")
+    pre_s, _ = _avg_metric(side_players, "preaim")
+    if aim_n >= 2 and aim_s is not None:
+        pre_txt = f", {pre_s:.1f}° pre-aim" if pre_s is not None else ""
+        if aim_no >= 2 and aim_o is not None and aim_s >= aim_o + 2.5:
+            notes.append(f"Better aim-related statistics ({aim_s:.1f} avg Aim Rating{pre_txt} across {aim_n} players).")
+        elif aim_s >= 60.0:
+            notes.append(f"Sharp mechanical core ({aim_s:.1f} avg Aim Rating{pre_txt}).")
 
     open_s, open_n = _avg_metric(side_players, "opening_duel_pct")
-    open_o, _ = _avg_metric(other_players, "opening_duel_pct")
+    open_o, open_no = _avg_metric(other_players, "opening_duel_pct")
     if open_n >= 2 and open_s is not None:
-        if open_o is not None and open_s >= open_o + 2.5:
-            notes.append(f"Stronger opening-duel potential ({open_s:.1f}% first-contact success).")
-        elif open_o is not None and open_s + 2.5 <= open_o:
-            notes.append("Should coordinate early-round utility and defaults against aggressive opening peeks.")
+        if open_no >= 2 and open_o is not None and open_s >= open_o + 2.5:
+            notes.append(f"Stronger available opening-duel potential ({open_s:.1f}% first-contact wins).")
+        elif open_no >= 2 and open_o is not None and open_s + 2.5 <= open_o:
+            notes.append("Needs to coordinate opening fights and early utility carefully.")
 
-    clutch_s, clutch_n = _avg_metric(side_players, "clutch_win_pct")
-    clutch_o, _ = _avg_metric(other_players, "clutch_win_pct")
-    if clutch_n >= 2 and clutch_s is not None:
-        if clutch_o is not None and clutch_s >= clutch_o + 2.5:
-            notes.append(f"Stronger late-round clutch composure ({clutch_s:.1f}% avg 1vX conversion).")
-        elif clutch_o is not None and clutch_s + 2.5 <= clutch_o:
-            notes.append("Slightly less proven in late-round clutch situations from available data.")
+    adr_s, adr_n = _avg_metric(side_players, "adr")
+    adr_o, adr_no = _avg_metric(other_players, "adr")
+    kd_s, _ = _avg_metric(side_players, "kd_ratio")
+    if adr_n >= 2 and adr_s is not None:
+        if adr_no >= 2 and adr_o is not None and adr_s >= adr_o + 3.0:
+            notes.append(f"Higher damage output ({adr_s:.1f} avg ADR{f', {kd_s:.2f} K/D' if kd_s else ''} across {adr_n} tracked players).")
+        elif adr_s >= 76.0:
+            notes.append(f"Good damage output across recent rounds ({adr_s:.1f} avg ADR).")
 
-    util_s, util_n = _avg_metric(side_players, "utility_damage_per_round")
+    util_s, util_n = _avg_metric(side_players, "utility_rating")
+    util_o, util_no = _avg_metric(other_players, "utility_rating")
     flash_s, _ = _avg_metric(side_players, "flash_assists_per_round")
-    if util_n >= 2 and util_s is not None and util_s >= 15.0:
+    if util_n >= 2 and util_s is not None:
         flash_txt = f" and {flash_s:.2f} flash assists/rd" if flash_s is not None else ""
-        notes.append(f"Good utility setup for site executes ({util_s:.1f} HE/molly dmg/rd{flash_txt}).")
+        if util_no >= 2 and util_o is not None and util_s >= util_o + 3.0:
+            notes.append(f"More balanced utility contribution ({util_s:.1f} avg Utility Rating{flash_txt}).")
+        elif util_no >= 2 and util_o is not None and util_s + 3.5 <= util_o:
+            notes.append("Slightly less utility contribution — lean on coordinated execute flashes.")
 
     trade_s, trade_n = _avg_metric(side_players, "trade_kills_per_match")
-    trade_o, _ = _avg_metric(other_players, "trade_kills_per_match")
-    if trade_n >= 2 and trade_s is not None:
-        if trade_o is not None and trade_s >= trade_o + 2.5:
-            notes.append(f"Active trading discipline ({trade_s:.1f}% trade-kill follow-up across {trade_n} tracked players).")
+    trade_o, trade_no = _avg_metric(other_players, "trade_kills_per_match")
+    if trade_n >= 2 and trade_s is not None and trade_no >= 2 and trade_o is not None and trade_s >= trade_o + 2.5:
+        notes.append(f"More consistent trading performance ({trade_s:.1f}% trade-kill conversion).")
 
     cons_s, cons_n = _avg_metric(side_players, "consistency_score")
-    cons_o, _ = _avg_metric(other_players, "consistency_score")
-    if cons_n >= 2 and cons_s is not None:
-        if cons_o is not None and cons_s >= cons_o + 3.0:
-            notes.append(f"Steadier rifle consistency ({cons_s:.1f}% good counter-strafed shots).")
+    cons_o, cons_no = _avg_metric(other_players, "consistency_score")
+    if cons_n >= 2 and cons_s is not None and cons_no >= 2 and cons_o is not None and cons_s >= cons_o + 2.5:
+        notes.append(f"Better recent mechanical consistency ({cons_s:.1f}% clean counter-strafed shots).")
+
+    clutch_s, clutch_n = _avg_metric(side_players, "clutch_win_pct")
+    clutch_o, clutch_no = _avg_metric(other_players, "clutch_win_pct")
+    if clutch_n >= 2 and clutch_s is not None and clutch_no >= 2 and clutch_o is not None and clutch_s >= clutch_o + 2.5:
+        notes.append(f"Stronger available clutch numbers ({clutch_s:.1f}% 1vX conversion).")
 
     form_vals = [p.recent_form_normalized for p in side_players if p.has_recent_form]
     other_form = [p.recent_form_normalized for p in other_players if p.has_recent_form]
@@ -355,7 +403,7 @@ def _team_cs2_notes(
         avg_f = sum(form_vals) / len(form_vals)
         avg_of = sum(other_form) / len(other_form)
         if avg_f >= avg_of + 0.8:
-            notes.append("Coming in with stronger recent form over their last 10 matches.")
+            notes.append("Entering with stronger recent form across their latest tracked matches.")
 
     explicit_roles = [p.primary_role for p in side_players if p.primary_role]
     if explicit_roles:
@@ -364,7 +412,7 @@ def _team_cs2_notes(
         notes.append(f"Tagged roles: {role_str}.")
 
     if not notes:
-        notes.append("Limited match history available — lineup relies on community baseline ratings.")
+        notes.append("Limited external match statistics available for this lineup; consider refreshing profiles if linked.")
 
     return notes[:4]
 
@@ -387,9 +435,10 @@ def build_explanation(
 ) -> dict:
     players_list = list(normalized.values())
     avg_conf = round(sum(p.confidence for p in players_list) / len(players_list), 2)
-    manual_only_players = [p.display_name for p in players_list if p.sources_used == ["manual"]]
+    insufficient_players = [p.display_name for p in players_list if p.data_status == "INSUFFICIENT_DATA"]
+    low_conf_players = [p.display_name for p in players_list if p.data_status == "LOW_CONFIDENCE"]
     unverified_players = [p.display_name for p in players_list if not p.steam_id64]
-    data_coverage_pct = round(((10 - len(manual_only_players)) / 10.0) * 100.0)
+    data_coverage_pct = round(((10 - len(insufficient_players)) / 10.0) * 100.0)
 
     roles_a = split.role_summary["team_a"]
     roles_b = split.role_summary["team_b"]
@@ -403,26 +452,25 @@ def build_explanation(
     if roles_a.get("Support", 0) or roles_b.get("Support", 0):
         role_notes.append(f"Supports: Team A {roles_a['Support']} vs Team B {roles_b['Support']}")
 
-    team_a_sorted = sorted(
-        [normalized[pid] for pid in split.team_a_ids],
-        key=lambda p: (-p.normalized_strength, p.display_name),
-    )
-    team_b_sorted = sorted(
-        [normalized[pid] for pid in split.team_b_ids],
-        key=lambda p: (-p.normalized_strength, p.display_name),
-    )
+    def _display_rank_key(p: NormalizedPlayer) -> tuple[float, float, str]:
+        return (-(p.normalized_strength if p.normalized_strength is not None else -1.0), -p.confidence, p.display_name)
+
+    team_a_sorted = sorted([normalized[pid] for pid in split.team_a_ids], key=_display_rank_key)
+    team_b_sorted = sorted([normalized[pid] for pid in split.team_b_ids], key=_display_rank_key)
     top_a, low_a = team_a_sorted[0], team_a_sorted[-1]
     top_b, low_b = team_b_sorted[0], team_b_sorted[-1]
-    team_a_players = team_a_sorted
-    team_b_players = team_b_sorted
+
+    def _fmt_p(p: NormalizedPlayer) -> str:
+        s = f"{p.normalized_strength:.1f}" if p.normalized_strength is not None else "Insufficient Data"
+        return f"{p.display_name} ({s}" + (f", {p.primary_role})" if p.primary_role else ")")
 
     player_contributions = [
-        f"Team A anchor: {top_a.display_name} ({top_a.normalized_strength:.1f}, {top_a.primary_role or 'Flex'}) paired with {low_a.display_name} ({low_a.normalized_strength:.1f}).",
-        f"Team B anchor: {top_b.display_name} ({top_b.normalized_strength:.1f}, {top_b.primary_role or 'Flex'}) paired with {low_b.display_name} ({low_b.normalized_strength:.1f}).",
+        f"Team A anchor: {_fmt_p(top_a)} paired with {_fmt_p(low_a)}.",
+        f"Team B anchor: {_fmt_p(top_b)} paired with {_fmt_p(low_b)}.",
     ]
 
-    form_a = sum(p.recent_form_normalized for p in team_a_players) / 5.0
-    form_b = sum(p.recent_form_normalized for p in team_b_players) / 5.0
+    form_a = sum(p.recent_form_normalized for p in team_a_sorted) / 5.0
+    form_b = sum(p.recent_form_normalized for p in team_b_sorted) / 5.0
     form_tracked = sum(1 for p in players_list if p.has_recent_form)
     if form_tracked > 0:
         recent_form_summary = (
@@ -430,16 +478,16 @@ def build_explanation(
             f"Team A {form_a:+.2f} vs Team B {form_b:+.2f}."
         )
     else:
-        recent_form_summary = "No recent-form deltas available; split relies on baseline strength and roles."
+        recent_form_summary = "No recent-form deltas available from providers yet."
 
     trade_offs = []
     if split.objective_components.get("top_carry_gap", 0.0) > 2.5:
-        higher_top = "Team A" if top_a.normalized_strength >= top_b.normalized_strength else "Team B"
-        trade_offs.append(f"{higher_top} holds the stronger top-end carry, offset by deeper mid-roster strength on the opposing side.")
+        higher_top = "Team A" if (top_a.normalized_strength or 0.0) >= (top_b.normalized_strength or 0.0) else "Team B"
+        trade_offs.append(f"{higher_top} holds the stronger top-end carry, offset by deeper mid-roster balance on the opposing side.")
     if split.objective_components.get("role_imbalance", 0.0) > 1.5:
-        trade_offs.append("Accepted minor role asymmetry to preserve tight overall skill balance.")
+        trade_offs.append("Accepted minor role asymmetry to keep overall competitive skill close.")
     if not trade_offs:
-        trade_offs.append("Balanced both overall skill and role distribution with minimal trade-off.")
+        trade_offs.append("Balanced overall skill, role coverage, and available CS2 indicators cleanly.")
 
     constraints_honored = []
     if constraints.locked_a:
@@ -455,7 +503,6 @@ def build_explanation(
 
     alternative_comparisons = []
     for alt in (alternatives or []):
-        # Identify players differing between recommended Team A and alternative Team A (minimum orientation)
         rec_a = set(split.team_a_ids)
         alt_a = set(alt.team_a_ids)
         alt_b = set(alt.team_b_ids)
@@ -466,28 +513,25 @@ def build_explanation(
             moved_to_b = [normalized[pid].display_name for pid in sorted(rec_a - alt_b)]
             moved_to_a = [normalized[pid].display_name for pid in sorted(alt_b - rec_a)]
         diff_delta = round(alt.strength_diff - split.strength_diff, 2)
-        role_delta = round(alt.objective_components.get("role_imbalance", 0.0) - split.objective_components.get("role_imbalance", 0.0), 2)
         alternative_comparisons.append(
             {
                 "partition_key": alt.partition_key,
                 "strength_diff": alt.strength_diff,
                 "strength_diff_delta": diff_delta,
                 "moved_players": f"To A: {', '.join(moved_to_a)} | To B: {', '.join(moved_to_b)}",
-                "trade_off": (
-                    f"Skill gap {diff_delta:+.2f}, role imbalance {role_delta:+.2f}."
-                ),
+                "trade_off": f"Team strength gap {diff_delta:+.2f} compared to active split.",
             }
         )
 
-    team_a_notes = _team_cs2_notes(team_a_players, team_b_players)
-    team_b_notes = _team_cs2_notes(team_b_players, team_a_players)
+    team_a_notes = _team_cs2_notes(team_a_sorted, team_b_sorted)
+    team_b_notes = _team_cs2_notes(team_b_sorted, team_a_sorted)
 
     stale_count = sum(1 for p in players_list if p.stats_stale)
     tracked_combat = sum(1 for p in players_list if p.stats_sample_size >= 5)
 
     good_match_parts = []
     if split.strength_diff <= 1.5:
-        good_match_parts.append("Both sides have very comparable overall strength and should trade rounds evenly.")
+        good_match_parts.append("Both teams have comparable overall competitive strength and should trade rounds closely.")
     elif split.strength_diff <= 3.8:
         good_match_parts.append("Overall team strength is closely matched, leaving plenty of room for mid-round calling and momentum swings.")
     else:
@@ -495,20 +539,16 @@ def build_explanation(
             f"There is a noticeable rating gap ({split.strength_diff:.1f} pts) under current locks — consider checking an alternative split or swapping a pair."
         )
 
-    # Style contrast summary from verified averages
-    adr_a, n_a = _avg_metric(team_a_players, "adr")
-    adr_b, n_b = _avg_metric(team_b_players, "adr")
-    clutch_a, cn_a = _avg_metric(team_a_players, "clutch_win_pct")
-    clutch_b, cn_b = _avg_metric(team_b_players, "clutch_win_pct")
-    if n_a >= 2 and n_b >= 2 and adr_a is not None and adr_b is not None:
-        if adr_a >= adr_b + 3.0 and (cn_a >= 2 and cn_b >= 2 and clutch_b is not None and clutch_a is not None and clutch_b > clutch_a + 1.5):
-            good_match_parts.append(
-                "Team A brings higher raw damage output, while Team B leans on stronger late-round clutch conversion — a classic style contrast."
-            )
-        elif adr_b >= adr_a + 3.0 and (cn_a >= 2 and cn_b >= 2 and clutch_a is not None and clutch_b is not None and clutch_a > clutch_b + 1.5):
-            good_match_parts.append(
-                "Team B brings higher raw damage output, while Team A leans on stronger late-round clutch conversion — a classic style contrast."
-            )
+    # Contrast real mechanical/utility/combat styles cleanly without inventing numbers
+    aim_a, an_a = _avg_metric(team_a_sorted, "aim_rating")
+    aim_b, an_b = _avg_metric(team_b_sorted, "aim_rating")
+    util_a, un_a = _avg_metric(team_a_sorted, "utility_rating")
+    util_b, un_b = _avg_metric(team_b_sorted, "utility_rating")
+    if an_a >= 2 and an_b >= 2 and aim_a is not None and aim_b is not None:
+        if aim_a >= aim_b + 2.5 and un_a >= 2 and un_b >= 2 and util_b is not None and util_a is not None and util_b >= util_a + 2.0:
+            good_match_parts.append("Team A holds a mechanical aim edge, while Team B brings stronger utility fundamentals.")
+        elif aim_b >= aim_a + 2.5 and un_a >= 2 and un_b >= 2 and util_a is not None and util_b is not None and util_a >= util_b + 2.0:
+            good_match_parts.append("Team B holds a mechanical aim edge, while Team A brings stronger utility fundamentals.")
 
     if split.map_pool_summary["has_map_data"]:
         good_match_parts.append(
@@ -516,19 +556,19 @@ def build_explanation(
         )
 
     uncertainty_bits = []
-    if manual_only_players:
-        uncertainty_bits.append(f"{len(manual_only_players)} player(s) rely on community baseline ratings without external stats")
+    if insufficient_players:
+        uncertainty_bits.append(f"{len(insufficient_players)} player(s) have insufficient external data and remain unranked")
+    if low_conf_players:
+        uncertainty_bits.append(f"{len(low_conf_players)} player(s) have low-confidence external coverage")
     if stale_count:
         uncertainty_bits.append(f"{stale_count} player(s) have older cached stats")
-    if tracked_combat < 6:
-        uncertainty_bits.append("match history is partial across the lobby")
+    if tracked_combat < 6 and len(insufficient_players) < 10:
+        uncertainty_bits.append("match history coverage is partial across the lobby")
     if uncertainty_bits:
         good_match_parts.append("Uncertainty note: " + "; ".join(uncertainty_bits) + ".")
 
     good_match_summary = " ".join(good_match_parts)
-
     indicator = _balance_indicator(split.strength_diff)
-    summary_parts = [good_match_summary]
 
     share_summary = (
         f"{indicator} (Team A {split.team_a_strength:.1f} vs Team B {split.team_b_strength:.1f}). "
@@ -538,16 +578,18 @@ def build_explanation(
     return {
         "balance_indicator": indicator,
         "matchup_label": indicator,
-        "summary": " ".join(summary_parts),
+        "summary": good_match_summary,
         "good_match_summary": good_match_summary,
         "team_a_notes": team_a_notes,
         "team_b_notes": team_b_notes,
         "share_summary": share_summary,
         "avg_confidence": avg_conf,
         "data_coverage_pct": data_coverage_pct,
-        "confidence_label": "High" if avg_conf >= 0.8 else ("Medium" if avg_conf >= 0.65 else "Limited Data"),
-        "manual_only_count": len(manual_only_players),
-        "manual_only_players": manual_only_players,
+        "confidence_label": "High" if avg_conf >= 0.78 else ("Medium" if avg_conf >= 0.55 else "Insufficient Data"),
+        "manual_only_count": len(insufficient_players),
+        "manual_only_players": insufficient_players,
+        "insufficient_data_players": insufficient_players,
+        "low_confidence_players": low_conf_players,
         "stale_count": stale_count,
         "unverified_identity_players": unverified_players,
         "role_notes": role_notes,
@@ -581,6 +623,9 @@ def optimize_teams(
     if len(normalized) != 10:
         raise ValueError("Duplicate players detected in roster.")
 
+    rated_vals = [n.normalized_strength for n in normalized.values() if n.normalized_strength is not None]
+    neutral_prior = round(sum(rated_vals) / len(rated_vals), 2) if rated_vals else 50.0
+
     player_ids = [p.community_player_id for p in players]
     _validate_constraints_precheck(set(player_ids), constraints)
 
@@ -594,18 +639,17 @@ def optimize_teams(
         g1_set, g2_set = frozenset(g1), frozenset(g2)
         if has_directional_lock:
             if _orientation_satisfies(g1_set, g2_set, constraints):
-                valid_splits.append(evaluate_split(g1, g2, normalized, seed))
+                valid_splits.append(evaluate_split(g1, g2, normalized, seed, neutral_prior=neutral_prior))
             elif _orientation_satisfies(g2_set, g1_set, constraints):
-                valid_splits.append(evaluate_split(g2, g1, normalized, seed))
+                valid_splits.append(evaluate_split(g2, g1, normalized, seed, neutral_prior=neutral_prior))
         else:
             if _orientation_satisfies(g1_set, g2_set, constraints):
-                # Deterministic canonical orientation using seed hash
                 key = make_partition_key(g1, g2)
                 flip_bit = int(hashlib.sha256(f"{seed}:orient:{key}".encode("utf-8")).hexdigest()[0], 16) % 2
                 if flip_bit == 1:
-                    valid_splits.append(evaluate_split(g2, g1, normalized, seed))
+                    valid_splits.append(evaluate_split(g2, g1, normalized, seed, neutral_prior=neutral_prior))
                 else:
-                    valid_splits.append(evaluate_split(g1, g2, normalized, seed))
+                    valid_splits.append(evaluate_split(g1, g2, normalized, seed, neutral_prior=neutral_prior))
 
     if not valid_splits:
         raise UnsatisfiableConstraintsError(
@@ -625,7 +669,6 @@ def optimize_teams(
 
     recommended = candidate_pool[0]
 
-    # Pick materially distinct alternatives (prefer >=2 swaps away first, then fill with next best distinct)
     alternatives: list[EvaluatedSplit] = []
     for s in valid_splits:
         if s.partition_key == recommended.partition_key:

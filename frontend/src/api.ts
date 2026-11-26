@@ -107,7 +107,7 @@ export const api = {
     display_name: string;
     steam_id64?: string | null;
     steam_profile_url?: string | null;
-    manual_rating: number;
+    manual_rating?: number | null;
     premier_rating?: number | null;
     faceit_elo?: number | null;
     leetify_rating?: number | null;
@@ -141,10 +141,13 @@ export const api = {
   getPlayerProfile: (playerId: string) =>
     request<PlayerProfile>(`/players/${playerId}/profile`),
 
-  refreshPlayerProfile: (playerId: string, force = false) =>
-    request<RefreshProfileResponse>(`/players/${playerId}/refresh?force=${force}`, {
-      method: 'POST',
-    }),
+  refreshPlayerProfile: (playerId: string, force = false, provider?: string) =>
+    request<RefreshProfileResponse>(
+      `/players/${playerId}/refresh?force=${force}${provider && provider !== 'all' ? `&provider=${encodeURIComponent(provider)}` : ''}`,
+      {
+        method: 'POST',
+      },
+    ),
 
   addStatSnapshot: (playerId: string, payload: Record<string, unknown>) =>
     request<PlayerProfile>(`/players/${playerId}/stats`, {

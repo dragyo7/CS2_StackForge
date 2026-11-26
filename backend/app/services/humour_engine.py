@@ -10,7 +10,7 @@ CARD_RULES_VERSION = "card_rules_v1"
 class CardMetricContext:
     display_name: str
     primary_role: str | None
-    normalized_strength: float
+    normalized_strength: float | None
     strength_band: str
     sample_size: int
     provider_label: str | None
@@ -296,7 +296,7 @@ def _evaluate_matches(ctx: CardMetricContext) -> list[tuple[TitleRule, str]]:
             f"Clutch win rate {ctx.clutch_win_pct:.1f}% across {n} matches ({ctx.provider_label})",
         ))
 
-    if ctx.normalized_strength >= 76.0 and ctx.win_rate is not None and ctx.win_rate >= 54.0 and n >= 5:
+    if ctx.normalized_strength is not None and ctx.normalized_strength >= 76.0 and ctx.win_rate is not None and ctx.win_rate >= 54.0 and n >= 5:
         matches.append((
             RULE_MAP["unpaid_carry"],
             f"Normalized strength {ctx.normalized_strength:.1f} & {ctx.win_rate:.1f}% win rate ({n} matches)",
@@ -401,7 +401,9 @@ def generate_player_card(
             "badges": [],
             "eligible_count": 0,
             "discord_card_text": (
-                f"**{ctx.display_name}** [{ctx.primary_role or 'Flex'}] • Strength {ctx.normalized_strength:.1f} ({ctx.strength_band})"
+                f"**{ctx.display_name}** [{ctx.primary_role or 'Flex'}] • Strength "
+                + (f"{ctx.normalized_strength:.1f}" if ctx.normalized_strength is not None else "Insufficient Data")
+                + f" ({ctx.strength_band})"
             ),
         }
 
@@ -441,7 +443,7 @@ def generate_player_card(
             "discord_card_text": (
                 f"**{ctx.display_name}** — *{fallback_title}*\n"
                 f"> {fallback_tagline}\n"
-                f"Strength: {ctx.normalized_strength:.1f} ({ctx.strength_band}) | Role: {ctx.primary_role or 'Unassigned'}"
+                f"Strength: {f'{ctx.normalized_strength:.1f}' if ctx.normalized_strength is not None else 'Insufficient Data'} ({ctx.strength_band}) | Role: {ctx.primary_role or 'Unassigned'}"
             ),
         }
 

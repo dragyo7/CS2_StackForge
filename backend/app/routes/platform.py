@@ -14,7 +14,7 @@ from app.models import CommunityPlayer, SpreadsheetImport, WatchlistEntry
 from app.providers.cswatch import CSWatchProvider
 from app.providers.external import LeetifyProvider
 from app.providers.steam import SteamProvider
-from app.services import auth_service, identity_resolver, import_service, player_service, trust_service
+from app.services import auth_service, identity_resolver, import_service, player_service, scheduler, trust_service
 
 router = APIRouter(prefix="/api", tags=["platform"])
 
@@ -52,8 +52,10 @@ def signup(payload: SignupRequest, db: Session = Depends(get_db)):
 @router.post("/auth/login")
 def login(payload: LoginRequest, db: Session = Depends(get_db)):
     user, token = auth_service.login_user(db, payload.email, payload.password)
+    stale_refresh_scheduled = scheduler.schedule_stale_refresh_for_login(user.linked_steam_id64)
     return {
         "token": token,
+        "stale_refresh_scheduled": stale_refresh_scheduled,
         "user": {
             "id": user.id,
             "email": user.email,

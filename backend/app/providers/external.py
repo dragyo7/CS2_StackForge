@@ -20,6 +20,22 @@ def _safe_int(val) -> int | None:
     return int(round(f)) if f is not None else None
 
 
+def _retry_delay_seconds(resp: httpx.Response, attempt: int, base: float = 1.5) -> float:
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            return max(0.5, min(30.0, float(ra)))
+        except ValueError:
+            pass
+    return min(15.0, base * (2 ** attempt))
+
+
+def _pct_100(val: float | None) -> float | None:
+    if val is None:
+        return None
+    return round(val * 100.0, 2) if 0.0 <= val <= 1.0 else round(val, 2)
+
+
 class FaceitProvider:
     """Authorized FACEIT Data API v4 adapter (non-blocking, server-side key only)."""
 
@@ -185,7 +201,7 @@ class LeetifyProvider:
                     )
                     if resp.status_code != 429:
                         break
-                    await _asyncio.sleep(1.5 * (attempt + 1))
+                    await _asyncio.sleep(_retry_delay_seconds(resp, attempt, base=1.5))
 
                 assert resp is not None
                 if resp.status_code == 404:
@@ -217,6 +233,7 @@ class LeetifyProvider:
                     )
 
                 matches_raw: list[dict] = []
+                matches_status = "SKIPPED"
                 if include_matches:
                     await _asyncio.sleep(0.35)
                     mresp = None
@@ -228,9 +245,14 @@ class LeetifyProvider:
                         )
                         if mresp.status_code != 429:
                             break
-                        await _asyncio.sleep(1.2 * (attempt + 1))
+                        await _asyncio.sleep(_retry_delay_seconds(mresp, attempt, base=1.2))
                     if mresp is not None and mresp.status_code == 200 and isinstance(mresp.json(), list):
                         matches_raw = mresp.json()
+                        matches_status = "OK"
+                    elif mresp is not None and mresp.status_code == 429:
+                        matches_status = "RATE_LIMITED"
+                    elif mresp is not None:
+                        matches_status = "UNAVAILABLE"
 
             ranks = payload.get("ranks") or {}
             rating = payload.get("rating") or {}
@@ -240,6 +262,14 @@ class LeetifyProvider:
             premier = _safe_int(ranks.get("premier")) if isinstance(ranks, dict) else None
             faceit_elo = _safe_int(ranks.get("faceit_elo")) if isinstance(ranks, dict) else None
             faceit_lvl = _safe_int(ranks.get("faceit")) if isinstance(ranks, dict) else None
+
+            aim_rating = round(_safe_float(rating.get("aim")), 2) if _safe_float(rating.get("aim")) is not None else None
+            utility_rating = round(_safe_float(rating.get("utility")), 2) if _safe_float(rating.get("utility")) is not None else None
+            positioning_rating = (
+                round(_safe_float(rating.get("positioning")), 2)
+                if _safe_float(rating.get("positioning")) is not None
+                else None
+            )
 
             winrate_raw = _safe_float(payload.get("winrate"))
             win_pct = round(winrate_raw * 100.0, 1) if (winrate_raw is not None and winrate_raw <= 1.0) else winrate_raw
@@ -272,6 +302,13 @@ class LeetifyProvider:
                 if map_name and m_lrating is not None:
                     map_perf.setdefault(map_name, []).append(m_lrating)
 
+                rt_raw = _safe_float(me.get("reaction_time"))
+                rt_ms = round(rt_raw * 1000.0, 1) if (rt_raw is not None and rt_raw < 10.0) else rt_raw
+                trade_opps = _safe_int(me.get("trade_kill_opportunities")) or 0
+                trade_pct = _pct_100(_safe_float(me.get("trade_kills_success_percentage"))) if trade_opps > 0 else None
+                td_opps = _safe_int(me.get("traded_death_opportunities")) or 0
+                td_pct = _pct_100(_safe_float(me.get("traded_deaths_success_percentage"))) if td_opps > 0 else None
+
                 parsed_matches.append(
                     {
                         "external_match_id": str(m.get("id")),
@@ -282,6 +319,14 @@ class LeetifyProvider:
                         "kd_ratio": _safe_float(me.get("kd_ratio")),
                         "adr": _safe_float(me.get("dpr")),
                         "hs_pct": hs_match_pct,
+                        "preaim": _safe_float(me.get("preaim")),
+                        "reaction_time_ms": rt_ms,
+                        "spotted_accuracy": _pct_100(_safe_float(me.get("accuracy_enemy_spotted"))),
+                        "spray_accuracy": _pct_100(_safe_float(me.get("spray_accuracy"))),
+                        "consistency_score": _pct_100(_safe_float(me.get("counter_strafing_shots_good_ratio"))),
+                        "trade_pct": trade_pct,
+                        "traded_deaths_pct": td_pct,
+                        "enemies_flashed": _safe_float(me.get("flashbang_hit_foe")) or 0.0,
                         "flash_assist": _safe_float(me.get("flash_assist")) or 0.0,
                         "he_dmg": _safe_float(me.get("he_foes_damage_avg")),
                         "multi2k": _safe_int(me.get("multi2k")) or 0,
@@ -303,8 +348,16 @@ class LeetifyProvider:
                 adrs = [x["adr"] for x in subset if x["adr"] is not None]
                 hss = [x["hs_pct"] for x in subset if x["hs_pct"] is not None]
                 hes = [x["he_dmg"] for x in subset if x["he_dmg"] is not None]
+                preaims = [x["preaim"] for x in subset if x["preaim"] is not None]
+                rts = [x["reaction_time_ms"] for x in subset if x["reaction_time_ms"] is not None]
+                spots = [x["spotted_accuracy"] for x in subset if x["spotted_accuracy"] is not None]
+                sprays = [x["spray_accuracy"] for x in subset if x["spray_accuracy"] is not None]
+                cons = [x["consistency_score"] for x in subset if x["consistency_score"] is not None]
+                trades = [x["trade_pct"] for x in subset if x["trade_pct"] is not None]
+                tds = [x["traded_deaths_pct"] for x in subset if x["traded_deaths_pct"] is not None]
                 total_rounds = sum(x["rounds"] for x in subset)
                 total_flashes = sum(x["flash_assist"] for x in subset)
+                total_enemies_flashed = sum(x["enemies_flashed"] for x in subset)
                 total_multis = sum(x["multi2k"] + x["multi3k"] + x["multi4k"] + x["multi5k"] for x in subset)
                 return {
                     "matches_played": n,
@@ -314,7 +367,15 @@ class LeetifyProvider:
                     "hs_pct": round(sum(hss) / len(hss), 1) if hss else None,
                     "utility_damage_per_round": round(sum(hes) / len(hes), 1) if hes else None,
                     "flash_assists_per_round": round(total_flashes / total_rounds, 3) if total_rounds > 0 else None,
+                    "enemies_flashed_per_round": round(total_enemies_flashed / total_rounds, 3) if total_rounds > 0 else None,
                     "multi_kill_rate": round(total_multis / n, 2),
+                    "preaim": round(sum(preaims) / len(preaims), 2) if preaims else None,
+                    "reaction_time_ms": round(sum(rts) / len(rts), 1) if rts else None,
+                    "spotted_accuracy": round(sum(spots) / len(spots), 1) if spots else None,
+                    "spray_accuracy": round(sum(sprays) / len(sprays), 1) if sprays else None,
+                    "consistency_score": round(sum(cons) / len(cons), 1) if cons else None,
+                    "trade_kills_per_match": round(sum(trades) / len(trades), 1) if trades else None,
+                    "traded_deaths_pct": round(sum(tds) / len(tds), 1) if tds else None,
                 }
 
             recent10 = _agg(parsed_matches[:10])
@@ -343,16 +404,27 @@ class LeetifyProvider:
                 "hs_pct": recent30.get("hs_pct") or _safe_float(stats.get("accuracy_head")),
                 "opening_duel_pct": opening_pct,
                 "trade_kills_per_match": _safe_float(stats.get("trade_kills_success_percentage")),
+                "traded_deaths_pct": _safe_float(stats.get("traded_deaths_success_percentage")),
                 "utility_damage_per_round": _safe_float(stats.get("he_foes_damage_avg")),
                 "flash_assists_per_round": recent30.get("flash_assists_per_round"),
+                "enemies_flashed_per_round": recent30.get("enemies_flashed_per_round"),
                 "clutch_win_pct": clutch_pct,
                 "consistency_score": _safe_float(stats.get("counter_strafing_good_shots_ratio")),
+                "aim_rating": aim_rating,
+                "utility_rating": utility_rating,
+                "positioning_rating": positioning_rating,
+                "preaim": _safe_float(stats.get("preaim")),
+                "reaction_time_ms": _safe_float(stats.get("reaction_time_ms")),
+                "spotted_accuracy": _safe_float(stats.get("accuracy_enemy_spotted")),
+                "spray_accuracy": _safe_float(stats.get("spray_accuracy")),
             }
 
+            res_status = "PARTIAL" if matches_status in ("RATE_LIMITED", "UNAVAILABLE") else "OK"
+            summary_note = f" (recent matches: {matches_status})" if res_status == "PARTIAL" else ""
             return ProviderResult(
                 provider="leetify",
-                status="OK",
-                summary=f"Leetify synced ({payload.get('total_matches') or 0} matches; Premier {premier or 'N/A'}).",
+                status=res_status,
+                summary=f"Leetify synced ({payload.get('total_matches') or 0} matches; Premier {premier or 'N/A'}){summary_note}.",
                 data={
                     "leetify_id": payload.get("id"),
                     "persona_name": payload.get("name"),
@@ -360,12 +432,16 @@ class LeetifyProvider:
                     "premier_rating": premier,
                     "faceit_elo": faceit_elo,
                     "faceit_level": faceit_lvl,
+                    "aim_rating": aim_rating,
+                    "utility_rating": utility_rating,
+                    "positioning_rating": positioning_rating,
                     "bans": payload.get("bans") or [],
                     "recent_form": recent_form,
                     "map_deltas": map_deltas,
                     "combat_stats_lifetime": lifetime_stats,
                     "combat_stats_recent10": recent10,
                     "recent_matches": parsed_matches[:15],
+                    "matches_status": matches_status,
                     "profile_url": f"https://leetify.com/app/profile/{steam_id64}",
                 },
             )

@@ -55,7 +55,7 @@ export const SharedLineupView: React.FC<Props> = ({ roomTitle, lineup, onBack })
                   <strong>{p.display_name}</strong>
                   {p.primary_role && <span className="badge" style={{ marginLeft: '0.4rem' }}>{p.primary_role}</span>}
                 </div>
-                <span className="mono small muted">{p.normalized_strength.toFixed(1)}</span>
+                <span className="mono small muted">{p.normalized_strength != null ? p.normalized_strength.toFixed(1) : 'Unranked'}</span>
               </div>
             ))}
           </div>
@@ -71,7 +71,7 @@ export const SharedLineupView: React.FC<Props> = ({ roomTitle, lineup, onBack })
                   <strong>{p.display_name}</strong>
                   {p.primary_role && <span className="badge" style={{ marginLeft: '0.4rem' }}>{p.primary_role}</span>}
                 </div>
-                <span className="mono small muted">{p.normalized_strength.toFixed(1)}</span>
+                <span className="mono small muted">{p.normalized_strength != null ? p.normalized_strength.toFixed(1) : 'Unranked'}</span>
               </div>
             ))}
           </div>

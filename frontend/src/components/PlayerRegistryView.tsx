@@ -35,17 +35,19 @@ export const PlayerRegistryView: React.FC<Props> = ({
   onError,
 }) => {
   const [search, setSearch] = useState('');
+  const [viewMode, setViewMode] = useState<'cards' | 'standings'>('cards');
   const [showImportPanel, setShowImportPanel] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [editing, setEditing] = useState<Player | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [refreshBanner, setRefreshBanner] = useState<{ text: string; ok: boolean } | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Add / Edit form fields
+  // Add / Edit form fields (manual rating intentionally removed from matchmaking/UI)
   const [displayName, setDisplayName] = useState('');
   const [steamInput, setSteamInput] = useState('');
-  const [manualRating, setManualRating] = useState('55');
   const [premierRating, setPremierRating] = useState('');
   const [faceitElo, setFaceitElo] = useState('');
   const [leetifyRating, setLeetifyRating] = useState('');
@@ -54,7 +56,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
   // Bulk import
   const [bulkText, setBulkText] = useState('');
-  const [bulkDefaultRating, setBulkDefaultRating] = useState('50');
   const [allowManualNames, setAllowManualNames] = useState(true);
   const [bulkResult, setBulkResult] = useState<BulkImportResponse | null>(null);
 
@@ -63,7 +64,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
     setFormError(null);
     setDisplayName('');
     setSteamInput('');
-    setManualRating('55');
     setPremierRating('');
     setFaceitElo('');
     setLeetifyRating('');
@@ -77,7 +77,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
     setFormError(null);
     setDisplayName(p.display_name);
     setSteamInput(p.steam_id64 || p.steam_profile_url || '');
-    setManualRating(String(p.manual_rating));
     setPremierRating(p.premier_rating != null ? String(p.premier_rating) : '');
     setFaceitElo(p.faceit_elo != null ? String(p.faceit_elo) : '');
     setLeetifyRating(p.leetify_rating != null ? String(p.leetify_rating) : '');
@@ -100,7 +99,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
           display_name: displayName.trim(),
           steam_id64: isRawId ? trimmedSteam : trimmedSteam ? undefined : null,
           steam_profile_url: isUrl ? trimmedSteam : undefined,
-          manual_rating: Number(manualRating) || 50,
           premier_rating: premierRating ? Number(premierRating) : undefined,
           clear_premier: !premierRating && editing.premier_rating != null,
           faceit_elo: faceitElo ? Number(faceitElo) : undefined,
@@ -116,7 +114,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
           display_name: displayName.trim(),
           steam_id64: isRawId ? trimmedSteam : null,
           steam_profile_url: isUrl ? trimmedSteam : !isRawId && trimmedSteam ? trimmedSteam : null,
-          manual_rating: Number(manualRating) || 50,
           premier_rating: premierRating ? Number(premierRating) : null,
           faceit_elo: faceitElo ? Number(faceitElo) : null,
           leetify_rating: leetifyRating ? Number(leetifyRating) : null,
@@ -168,9 +165,16 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
   const handleRefreshAll = async () => {
     setBusy(true);
+    setRefreshBanner(null);
     try {
-      await api.refreshAllPlayers(true);
+      const res = await api.refreshAllPlayers(true);
       await onRefresh();
+      const okCount = (res.results || []).filter((r: any) => r.status === 'SUCCESS').length;
+      const partialCount = (res.results || []).filter((r: any) => r.status === 'PARTIAL').length;
+      setRefreshBanner({
+        text: `Batch refresh finished for ${res.total} players (${okCount} SUCCESS, ${partialCount} PARTIAL). Cached data preserved where providers failed or rate-limited.`,
+        ok: okCount > 0,
+      });
     } catch (err) {
       onError(err instanceof ApiError ? err.message : 'Batch refresh failed.');
     } finally {
@@ -183,7 +187,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
     if (!bulkText.trim()) return;
     setBusy(true);
     try {
-      const res = await api.bulkImport(bulkText, Number(bulkDefaultRating) || 50, allowManualNames);
+      const res = await api.bulkImport(bulkText, 50, allowManualNames);
       setBulkResult(res);
       await onRefresh();
     } catch (err) {
@@ -207,12 +211,23 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
   const handleQuickRefresh = async (playerId: string) => {
     setBusy(true);
+    setRefreshingId(playerId);
+    setRefreshBanner(null);
     try {
-      await api.refreshPlayerProfile(playerId, true);
+      const res = await api.refreshPlayerProfile(playerId, true);
       await onRefresh();
+      const summary =
+        res.provider_results && res.provider_results.length > 0
+          ? res.provider_results.map((pr) => `${pr.provider}:${pr.status}`).join(' • ')
+          : res.message;
+      setRefreshBanner({
+        text: `Refresh ${res.profile.player.display_name} [${res.status || 'DONE'}]: ${summary}`,
+        ok: res.status === 'SUCCESS' || res.status === 'PARTIAL',
+      });
     } catch (err) {
       onError(err instanceof ApiError ? err.message : 'Profile refresh failed.');
     } finally {
+      setRefreshingId(null);
       setBusy(false);
     }
   };
@@ -242,10 +257,16 @@ export const PlayerRegistryView: React.FC<Props> = ({
           <div>
             <h2>Player Registry ({players.length})</h2>
             <p className="muted" style={{ margin: '0.2rem 0 0' }}>
-              Persistent roster for your CS2 stack. SteamID64 is stored as a string; manual ratings work offline without API keys.
+              Community ranking based on available CS2 stats &amp; ratings (SteamID64-keyed; manual ratings excluded from balancing).
             </p>
           </div>
           <div className="row">
+            <button
+              className={`btn ${viewMode === 'standings' ? 'btn-primary' : ''}`}
+              onClick={() => setViewMode(viewMode === 'cards' ? 'standings' : 'cards')}
+            >
+              {viewMode === 'standings' ? 'Card View' : 'Standings Table'}
+            </button>
             <button
               className={`btn ${showImportPanel ? 'btn-primary' : ''}`}
               onClick={() => setShowImportPanel(!showImportPanel)}
@@ -302,6 +323,18 @@ export const PlayerRegistryView: React.FC<Props> = ({
           </div>
         </div>
 
+        {refreshBanner && (
+          <div
+            className={`alert ${refreshBanner.ok ? 'alert-ok' : 'alert-warn'}`}
+            style={{ marginBottom: '0.85rem', padding: '0.55rem 0.75rem' }}
+          >
+            <span className="small">{refreshBanner.text}</span>
+            <button className="btn btn-xs" onClick={() => setRefreshBanner(null)}>
+              OK
+            </button>
+          </div>
+        )}
+
         {filtered.length === 0 ? (
           <div className="card" style={{ background: 'var(--bg-canvas)', textAlign: 'center', padding: '2rem' }}>
             <p className="muted">
@@ -310,9 +343,84 @@ export const PlayerRegistryView: React.FC<Props> = ({
                 : 'No players match that search filter.'}
             </p>
           </div>
+        ) : viewMode === 'standings' ? (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-muted)' }}>
+                  <th style={{ padding: '0.5rem' }}>Rank</th>
+                  <th style={{ padding: '0.5rem' }}>Player</th>
+                  <th style={{ padding: '0.5rem' }}>Strength</th>
+                  <th style={{ padding: '0.5rem' }}>Premier</th>
+                  <th style={{ padding: '0.5rem' }}>Leetify</th>
+                  <th style={{ padding: '0.5rem' }}>FACEIT</th>
+                  <th style={{ padding: '0.5rem' }}>Aim</th>
+                  <th style={{ padding: '0.5rem' }}>Utility</th>
+                  <th style={{ padding: '0.5rem' }}>Form</th>
+                  <th style={{ padding: '0.5rem' }}>Confidence</th>
+                  <th style={{ padding: '0.5rem' }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((p, idx) => (
+                  <tr key={p.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.normalized_strength != null ? `#${idx + 1}` : 'Unranked'}
+                    </td>
+                    <td style={{ padding: '0.45rem 0.5rem' }}>
+                      <div className="row" style={{ gap: '0.45rem' }}>
+                        <PlayerAvatar name={p.display_name} avatarUrl={p.avatar_url} role={p.primary_role} size={24} />
+                        <strong style={{ cursor: onOpenProfile ? 'pointer' : 'default' }} onClick={() => onOpenProfile?.(p.id)}>
+                          {p.display_name}
+                        </strong>
+                      </div>
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.normalized_strength != null ? `${p.normalized_strength.toFixed(1)}` : 'Unavailable'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.premier_rating != null ? p.premier_rating.toLocaleString() : '—'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.leetify_rating != null ? `${p.leetify_rating >= 0 ? '+' : ''}${p.leetify_rating.toFixed(2)}` : '—'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.faceit_elo != null ? `${p.faceit_elo}${p.faceit_level ? ` (L${p.faceit_level})` : ''}` : '—'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.aim_rating != null ? p.aim_rating.toFixed(1) : '—'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.utility_rating != null ? p.utility_rating.toFixed(1) : '—'}
+                    </td>
+                    <td className="mono" style={{ padding: '0.45rem 0.5rem' }}>
+                      {p.recent_form != null ? `${p.recent_form >= 0 ? '+' : ''}${p.recent_form.toFixed(2)}` : '—'}
+                    </td>
+                    <td style={{ padding: '0.45rem 0.5rem' }}>
+                      <span className={`badge ${p.data_status === 'OK' ? 'badge-ok' : 'badge-warn'}`}>
+                        {Math.round(p.confidence * 100)}%
+                      </span>
+                    </td>
+                    <td style={{ padding: '0.45rem 0.5rem' }}>
+                      <div className="row" style={{ gap: '0.25rem' }}>
+                        <button
+                          className="btn btn-xs"
+                          title="Refresh individual player"
+                          onClick={() => handleQuickRefresh(p.id)}
+                          disabled={busy || (!p.steam_id64 && !p.vanity_name)}
+                        >
+                          <RefreshCw size={12} /> {refreshingId === p.id ? '...' : 'Refresh'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))', gap: '0.75rem' }}>
-            {filtered.map((p) => {
+            {filtered.map((p, idx) => {
               const prevAlias = p.aliases.find((a) => a.previous_name)?.previous_name;
               return (
                 <div key={p.id} className="card" style={{ background: 'var(--bg-elevated)', padding: '0.85rem' }}>
@@ -321,6 +429,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
                       <PlayerAvatar name={p.display_name} avatarUrl={p.avatar_url} role={p.primary_role} size={38} />
                       <div style={{ minWidth: 0 }}>
                         <div className="row" style={{ gap: '0.35rem' }}>
+                          <span className="badge mono">{p.normalized_strength != null ? `#${idx + 1}` : 'Unranked'}</span>
                           <strong style={{ fontSize: '0.95rem' }}>{p.display_name}</strong>
                           {p.primary_role && <span className="badge">{p.primary_role}</span>}
                           {p.is_seeded && <span className="badge badge-warn">DEMO SAMPLE</span>}
@@ -329,7 +438,7 @@ export const PlayerRegistryView: React.FC<Props> = ({
                           {p.steam_id64 ? (
                             <span style={{ color: 'var(--ok)' }}>SteamID64: {p.steam_id64}</span>
                           ) : (
-                            <span style={{ color: 'var(--warn)' }}>Manual only (no SteamID64 linked)</span>
+                            <span style={{ color: 'var(--warn)' }}>Unlinked (no SteamID64)</span>
                           )}
                         </div>
                         {prevAlias && (
@@ -346,11 +455,14 @@ export const PlayerRegistryView: React.FC<Props> = ({
                           <Activity size={12} /> Profile
                         </button>
                       )}
-                      {p.steam_id64 && (
-                        <button className="btn btn-xs" title="Refresh Steam profile" onClick={() => handleQuickRefresh(p.id)} disabled={busy}>
-                          <RefreshCw size={12} />
-                        </button>
-                      )}
+                      <button
+                        className="btn btn-xs"
+                        title={p.steam_id64 || p.vanity_name ? 'Refresh Player (Steam/Leetify/FACEIT/CSWatch)' : 'Link a SteamID64 to refresh'}
+                        onClick={() => handleQuickRefresh(p.id)}
+                        disabled={busy || (!p.steam_id64 && !p.vanity_name)}
+                      >
+                        <RefreshCw size={12} /> {refreshingId === p.id ? '...' : ''}
+                      </button>
                       <button className="btn btn-xs" title="Edit player" onClick={() => openEdit(p)}>
                         <Edit3 size={12} />
                       </button>
@@ -371,12 +483,16 @@ export const PlayerRegistryView: React.FC<Props> = ({
 
                   <div className="row" style={{ justifyContent: 'space-between', fontSize: '0.8rem' }}>
                     <div>
-                      <span className="muted">Normalized: </span>
-                      <strong className="mono">{p.normalized_strength.toFixed(1)}</strong>{' '}
-                      <span className="badge">{p.strength_band}</span>
+                      <span className="muted">Strength: </span>
+                      <strong className="mono">
+                        {p.normalized_strength != null ? p.normalized_strength.toFixed(1) : 'Unavailable'}
+                      </strong>{' '}
+                      <span className={`badge ${p.data_status === 'INSUFFICIENT_DATA' || p.data_status === 'LOW_CONFIDENCE' ? 'badge-warn' : ''}`}>
+                        {p.strength_band}
+                      </span>
                     </div>
                     <span className="small muted">
-                      Conf {Math.round(p.confidence * 100)}% • Manual {p.manual_rating}
+                      Conf {Math.round(p.confidence * 100)}% • {p.data_status || 'OK'}
                     </span>
                   </div>
 
@@ -385,19 +501,23 @@ export const PlayerRegistryView: React.FC<Props> = ({
                       {p.premier_rating != null && (
                         <span className="badge">Premier {p.premier_rating.toLocaleString()}</span>
                       )}
-                      {p.faceit_elo != null && <span className="badge">FACEIT {p.faceit_elo}</span>}
+                      {p.faceit_elo != null && (
+                        <span className="badge">FACEIT {p.faceit_elo}{p.faceit_level ? ` (L${p.faceit_level})` : ''}</span>
+                      )}
                       {p.leetify_rating != null && (
                         <span className="badge">
                           Leetify {p.leetify_rating >= 0 ? '+' : ''}{p.leetify_rating.toFixed(2)}
                         </span>
                       )}
+                      {p.aim_rating != null && <span className="badge">Aim {p.aim_rating.toFixed(0)}</span>}
+                      {p.utility_rating != null && <span className="badge">Util {p.utility_rating.toFixed(0)}</span>}
                       {p.card && p.card.eligible_count > 0 && (
                         <span className="badge badge-a">{p.card.primary_title}</span>
                       )}
                     </div>
                     <span className="small muted">
                       {p.last_successful_refresh_at
-                        ? `Updated ${new Date(p.last_successful_refresh_at).toLocaleDateString()}`
+                        ? `Updated ${new Date(p.last_successful_refresh_at).toLocaleString()}`
                         : p.refresh_status}
                     </span>
                   </div>
@@ -441,19 +561,6 @@ export const PlayerRegistryView: React.FC<Props> = ({
                     value={steamInput}
                     onChange={(e) => setSteamInput(e.target.value)}
                     placeholder="7656119... or steamcommunity.com/profiles/..."
-                  />
-                </div>
-                <div>
-                  <label className="field-label">Manual Skill Rating (1–100) *</label>
-                  <input
-                    className="input mono"
-                    type="number"
-                    min={1}
-                    max={100}
-                    step="0.5"
-                    required
-                    value={manualRating}
-                    onChange={(e) => setManualRating(e.target.value)}
                   />
                 </div>
                 <div>
@@ -501,8 +608,8 @@ export const PlayerRegistryView: React.FC<Props> = ({
                     className="input mono"
                     type="number"
                     step="0.01"
-                    min={-1}
-                    max={1}
+                    min={-25}
+                    max={25}
                     value={leetifyRating}
                     onChange={(e) => setLeetifyRating(e.target.value)}
                     placeholder="e.g. 0.03"
@@ -561,20 +668,8 @@ export const PlayerRegistryView: React.FC<Props> = ({
                     checked={allowManualNames}
                     onChange={(e) => setAllowManualNames(e.target.checked)}
                   />
-                  Save plain names as unverified manual profiles
+                  Save plain names as unlinked profiles (Insufficient Data until SteamID linked)
                 </label>
-                <div className="row">
-                  <span className="small muted">Default Rating</span>
-                  <input
-                    className="input mono"
-                    style={{ width: '75px' }}
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={bulkDefaultRating}
-                    onChange={(e) => setBulkDefaultRating(e.target.value)}
-                  />
-                </div>
               </div>
               <div className="row" style={{ justifyContent: 'flex-end' }}>
                 <button type="submit" className="btn btn-primary" disabled={busy || !bulkText.trim()}>

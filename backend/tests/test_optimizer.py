@@ -69,27 +69,39 @@ def test_missing_stats_are_unknown_not_zero():
         display_name="ManualOnly",
         steam_id64=None,
         identity_status="MANUAL_ONLY",
-        manual_rating=75.0,
+        manual_rating=95.0,
     )
     norm = normalize_player(manual_only)
-    assert norm.normalized_strength == 75.0
-    assert norm.confidence == 0.55
+    assert norm.normalized_strength is None
+    assert norm.data_status == "INSUFFICIENT_DATA"
+    assert norm.strength_band == "Insufficient Data"
+    assert norm.confidence == 0.0
     assert set(norm.missing_sources) == {"premier", "faceit", "leetify", "recent_form"}
 
-    # Adding Premier should never add raw scales (75 + 20000); normalized stays in [0, 100]
-    with_prem = PlayerInput(
+    # Legacy manual_rating is completely ignored even when Premier CSR exists
+    with_prem_high_manual = PlayerInput(
         community_player_id="m2",
         display_name="WithPrem",
         steam_id64=None,
         identity_status="MANUAL_ONLY",
-        manual_rating=75.0,
+        manual_rating=99.0,
         premier_rating=20000,
     )
-    norm_p = normalize_player(with_prem)
-    assert 70.0 <= norm_p.normalized_strength <= 80.0
+    with_prem_low_manual = PlayerInput(
+        community_player_id="m2",
+        display_name="WithPrem",
+        steam_id64=None,
+        identity_status="MANUAL_ONLY",
+        manual_rating=10.0,
+        premier_rating=20000,
+    )
+    norm_p = normalize_player(with_prem_high_manual)
+    norm_p_low = normalize_player(with_prem_low_manual)
+    assert norm_p.normalized_strength == norm_p_low.normalized_strength
+    assert 70.0 <= (norm_p.normalized_strength or 0.0) <= 80.0
     assert norm_p.confidence > norm.confidence
-    assert normalize_premier(20000) == 75.0
-    assert normalize_faceit(2000) == 78.0
+    assert normalize_premier(20000) == 74.0
+    assert normalize_faceit(2000) == 79.0
     assert normalize_leetify(0.0) == 50.0
 
 

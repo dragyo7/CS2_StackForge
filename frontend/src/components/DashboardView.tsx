@@ -97,7 +97,7 @@ export const DashboardView: React.FC<Props> = ({
                 FACEIT: {health?.providers.faceit === 'configured' ? 'OK' : 'Off'}
               </span>
             </div>
-            <span className="small muted">Manual mode always available</span>
+            <span className="small muted">Keyless Leetify & CSWatch active</span>
           </div>
         </div>
       </div>

@@ -67,6 +67,15 @@ class StatSnapshotOut(BaseModel):
     clutch_win_pct: float | None = None
     multi_kill_rate: float | None = None
     consistency_score: float | None = None
+    aim_rating: float | None = None
+    utility_rating: float | None = None
+    positioning_rating: float | None = None
+    preaim: float | None = None
+    reaction_time_ms: float | None = None
+    spotted_accuracy: float | None = None
+    spray_accuracy: float | None = None
+    enemies_flashed_per_round: float | None = None
+    traded_deaths_pct: float | None = None
     freshness: str
     is_sample_demo: bool
     captured_at: datetime
@@ -110,7 +119,7 @@ class PlayerCreate(BaseModel):
     premier_source: str | None = Field(default=None, max_length=64)
     premier_season: str | None = Field(default=None, max_length=64)
     faceit_elo: int | None = Field(default=None, ge=100, le=5000)
-    leetify_rating: float | None = Field(default=None, ge=-1.0, le=1.0)
+    leetify_rating: float | None = Field(default=None, ge=-25.0, le=25.0)
     recent_form: float | None = Field(default=None, ge=-1.0, le=1.0)
     primary_role: RoleType | None = None
     secondary_role: RoleType | None = None
@@ -127,7 +136,7 @@ class PlayerUpdate(BaseModel):
     premier_source: str | None = Field(default=None, max_length=64)
     premier_season: str | None = Field(default=None, max_length=64)
     faceit_elo: int | None = Field(default=None, ge=100, le=5000)
-    leetify_rating: float | None = Field(default=None, ge=-1.0, le=1.0)
+    leetify_rating: float | None = Field(default=None, ge=-25.0, le=25.0)
     recent_form: float | None = Field(default=None, ge=-1.0, le=1.0)
     primary_role: RoleType | None = None
     secondary_role: RoleType | None = None
@@ -194,7 +203,11 @@ class PlayerOut(BaseModel):
     premier_source: str | None
     premier_season: str | None
     faceit_elo: int | None
+    faceit_level: int | None = None
     leetify_rating: float | None
+    aim_rating: float | None = None
+    utility_rating: float | None = None
+    positioning_rating: float | None = None
     recent_form: float | None
     primary_role: str | None
     secondary_role: str | None
@@ -202,7 +215,8 @@ class PlayerOut(BaseModel):
     is_seeded: bool
     is_archived: bool = False
     stats_stale: bool = False
-    normalized_strength: float
+    data_status: str = "INSUFFICIENT_DATA"  # OK | LOW_CONFIDENCE | INSUFFICIENT_DATA
+    normalized_strength: float | None = None
     confidence: float
     strength_band: str
     missing_sources: list[str]
@@ -214,6 +228,14 @@ class PlayerOut(BaseModel):
     card: PlayerCardOut | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ProviderRefreshResultOut(BaseModel):
+    provider: str
+    status: str  # SUCCESS | PARTIAL | PRIVATE | NOT_LINKED | NOT_CONFIGURED | RATE_LIMITED | UNAVAILABLE | FAILED
+    summary: str
+    cache_hit: bool = False
+    fetched_at: datetime | None = None
 
 
 class PlayerProfileOut(BaseModel):
@@ -228,9 +250,11 @@ class PlayerProfileOut(BaseModel):
 
 class RefreshProfileResponse(BaseModel):
     profile: PlayerProfileOut
+    status: str = "SUCCESS"
     cache_hit: bool
     alias_changed: bool
     message: str
+    provider_results: list[ProviderRefreshResultOut] = []
 
 
 class PlayerCompareOut(BaseModel):

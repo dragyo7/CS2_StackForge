@@ -40,3 +40,21 @@ def run_migrations(engine: Engine) -> None:
         _add_column_if_missing(conn, "community_players", "card_tagline_variant", "INTEGER NOT NULL DEFAULT 0")
         _add_column_if_missing(conn, "community_players", "stats_visibility", "VARCHAR(24) NOT NULL DEFAULT 'COMMUNITY'")
         _add_column_if_missing(conn, "community_players", "is_archived", "BOOLEAN NOT NULL DEFAULT 0")
+        _add_column_if_missing(conn, "community_players", "faceit_level", "INTEGER")
+        _add_column_if_missing(conn, "community_players", "aim_rating", "FLOAT")
+        _add_column_if_missing(conn, "community_players", "utility_rating", "FLOAT")
+        _add_column_if_missing(conn, "community_players", "positioning_rating", "FLOAT")
+
+        # PlayerStatSnapshot extended CS2 mechanical & utility columns
+        for col_name in (
+            "aim_rating",
+            "utility_rating",
+            "positioning_rating",
+            "preaim",
+            "reaction_time_ms",
+            "spotted_accuracy",
+            "spray_accuracy",
+            "enemies_flashed_per_round",
+            "traded_deaths_pct",
+        ):
+            _add_column_if_missing(conn, "player_stat_snapshots", col_name, "FLOAT")

@@ -277,6 +277,15 @@ class PlayerStatSnapshot(Base):
     clutch_win_pct: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0-100 %
     multi_kill_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
     consistency_score: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0-100
+    aim_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    utility_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    positioning_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    preaim: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reaction_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spotted_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spray_accuracy: Mapped[float | None] = mapped_column(Float, nullable=True)
+    enemies_flashed_per_round: Mapped[float | None] = mapped_column(Float, nullable=True)
+    traded_deaths_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     freshness: Mapped[str] = mapped_column(String(24), default="FRESH", nullable=False)
     is_sample_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -305,7 +314,11 @@ class CommunityPlayer(Base):
     premier_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     premier_season: Mapped[str | None] = mapped_column(String(64), nullable=True)
     faceit_elo: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    faceit_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
     leetify_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    aim_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    utility_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
+    positioning_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     recent_form: Mapped[float | None] = mapped_column(Float, nullable=True)  # -1.0 to +1.0
 
     primary_role: Mapped[str | None] = mapped_column(String(32), nullable=True)

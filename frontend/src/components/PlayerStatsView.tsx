@@ -29,12 +29,21 @@ const METRIC_LABELS: { key: keyof StatSnapshot; label: string; suffix?: string; 
   { key: 'win_rate', label: 'Win Rate', suffix: '%', decimals: 1 },
   { key: 'kd_ratio', label: 'K/D Ratio', decimals: 2 },
   { key: 'adr', label: 'ADR', decimals: 1 },
+  { key: 'aim_rating', label: 'Aim Rating', decimals: 1 },
+  { key: 'utility_rating', label: 'Utility Rating', decimals: 1 },
+  { key: 'preaim', label: 'Pre-aim (°)', suffix: '°', decimals: 2 },
+  { key: 'reaction_time_ms', label: 'Time to Damage', suffix: ' ms', decimals: 0 },
+  { key: 'spotted_accuracy', label: 'Spotted Acc', suffix: '%', decimals: 1 },
+  { key: 'spray_accuracy', label: 'Spray Acc', suffix: '%', decimals: 1 },
   { key: 'kast', label: 'KAST', suffix: '%', decimals: 1 },
   { key: 'hs_pct', label: 'Headshot %', suffix: '%', decimals: 1 },
   { key: 'opening_duel_pct', label: 'Opening Duel %', suffix: '%', decimals: 1 },
+  { key: 'trade_kills_per_match', label: 'Trade Kills %', suffix: '%', decimals: 1 },
   { key: 'utility_damage_per_round', label: 'Utility Dmg / Rd', decimals: 1 },
   { key: 'flash_assists_per_round', label: 'Flash Assists / Rd', decimals: 2 },
+  { key: 'enemies_flashed_per_round', label: 'Enemies Flashed / Rd', decimals: 2 },
   { key: 'clutch_win_pct', label: 'Clutch Win %', suffix: '%', decimals: 1 },
+  { key: 'consistency_score', label: 'Counter-Strafe %', suffix: '%', decimals: 1 },
 ];
 
 export const PlayerStatsView: React.FC<Props> = ({
@@ -49,7 +58,8 @@ export const PlayerStatsView: React.FC<Props> = ({
   const [providerFilter, setProviderFilter] = useState<string>('all');
   const [scopeFilter, setScopeFilter] = useState<string>('all');
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
-  const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
+  const [refreshProvider, setRefreshProvider] = useState<string>('all');
+  const [refreshResult, setRefreshResult] = useState<{ text: string; status: string; providers?: { provider: string; status: string; summary: string; cache_hit?: boolean }[] } | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Compare state
@@ -78,7 +88,7 @@ export const PlayerStatsView: React.FC<Props> = ({
       return;
     }
     let cancelled = false;
-    setRefreshMsg(null);
+    setRefreshResult(null);
     api
       .getPlayerProfile(activeId)
       .then((res) => {
@@ -117,9 +127,13 @@ export const PlayerStatsView: React.FC<Props> = ({
     if (!activeId) return;
     setBusy(true);
     try {
-      const res = await api.refreshPlayerProfile(activeId, force);
+      const res = await api.refreshPlayerProfile(activeId, force, refreshProvider);
       setProfile(res.profile);
-      setRefreshMsg(res.message);
+      setRefreshResult({
+        text: res.message,
+        status: res.status || res.profile.player.refresh_status,
+        providers: res.provider_results,
+      });
       await onRefreshPlayers();
     } catch (err) {
       onError(err instanceof ApiError ? err.message : 'Profile refresh failed.');
@@ -251,7 +265,7 @@ export const PlayerStatsView: React.FC<Props> = ({
               <select className="select" value={compareA} onChange={(e) => setCompareA(e.target.value)}>
                 {players.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.display_name} ({p.normalized_strength.toFixed(1)} • {p.primary_role || 'Flex'})
+                    {p.display_name} ({p.normalized_strength != null ? p.normalized_strength.toFixed(1) : 'Unranked'} • {p.primary_role || 'Flex'})
                   </option>
                 ))}
               </select>
@@ -261,7 +275,7 @@ export const PlayerStatsView: React.FC<Props> = ({
               <select className="select" value={compareB} onChange={(e) => setCompareB(e.target.value)}>
                 {players.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.display_name} ({p.normalized_strength.toFixed(1)} • {p.primary_role || 'Flex'})
+                    {p.display_name} ({p.normalized_strength != null ? p.normalized_strength.toFixed(1) : 'Unranked'} • {p.primary_role || 'Flex'})
                   </option>
                 ))}
               </select>
@@ -309,7 +323,7 @@ export const PlayerStatsView: React.FC<Props> = ({
 
               <div className="card" style={{ background: 'var(--bg-elevated)' }}>
                 <p className="small muted" style={{ margin: '0 0 0.6rem' }}>
-                  Normalized strength uses separate scale calibration (`norm_v1`). Missing metrics show as Unavailable (never zero).
+                  Normalized competitive strength uses verified CS2 ratings &amp; stats only (<code>norm_v2</code>). Missing metrics display Unavailable (never zero).
                 </p>
                 {renderMetricRow(
                   'Normalized Strength (0-100)',
@@ -318,9 +332,15 @@ export const PlayerStatsView: React.FC<Props> = ({
                   100,
                 )}
                 {renderMetricRow(
-                  'Manual Skill Baseline',
-                  compareData.player_a.player.manual_rating,
-                  compareData.player_b.player.manual_rating,
+                  'Aim Rating (Leetify)',
+                  compareData.player_a.player.aim_rating,
+                  compareData.player_b.player.aim_rating,
+                  100,
+                )}
+                {renderMetricRow(
+                  'Utility Rating (Leetify)',
+                  compareData.player_a.player.utility_rating,
+                  compareData.player_b.player.utility_rating,
                   100,
                 )}
                 {renderMetricRow(
@@ -395,7 +415,7 @@ export const PlayerStatsView: React.FC<Props> = ({
                         {p.primary_role && <span className="badge">{p.primary_role}</span>}
                       </div>
                       <div className="small muted mono">
-                        Str {p.normalized_strength.toFixed(1)}
+                        {p.normalized_strength != null ? `Str ${p.normalized_strength.toFixed(1)}` : 'Insufficient Data'}
                         {p.aliases.length > 0 ? ` • ${p.aliases.length} alias` : ''}
                       </div>
                     </div>
@@ -467,6 +487,19 @@ export const PlayerStatsView: React.FC<Props> = ({
                         </a>
                       ) : null,
                     )}
+                    <select
+                      className="select"
+                      style={{ width: 'auto', padding: '0.3rem 0.5rem', fontSize: '0.78rem' }}
+                      value={refreshProvider}
+                      onChange={(e) => setRefreshProvider(e.target.value)}
+                      title="Select provider scope for individual refresh"
+                    >
+                      <option value="all">All Providers</option>
+                      <option value="steam">Steam Only</option>
+                      <option value="leetify">Leetify Only</option>
+                      <option value="faceit">FACEIT Only</option>
+                      <option value="cswatch">CSWatch Only</option>
+                    </select>
                     <button className="btn btn-sm" disabled={busy} onClick={() => handleRefreshProfile(false)}>
                       <RefreshCw size={13} /> Refresh
                     </button>
@@ -476,33 +509,50 @@ export const PlayerStatsView: React.FC<Props> = ({
                   </div>
                 </div>
 
-                {refreshMsg && (
+                {refreshResult && (
                   <div
                     className={`alert ${
-                      profile.player.refresh_status === 'OK' ? 'alert-ok' : 'alert-warn'
+                      refreshResult.status === 'SUCCESS' || refreshResult.status === 'OK' ? 'alert-ok' : 'alert-warn'
                     }`}
-                    style={{ marginBottom: '0.75rem', padding: '0.5rem 0.7rem' }}
+                    style={{ marginBottom: '0.75rem', padding: '0.55rem 0.75rem', flexDirection: 'column', alignItems: 'stretch', gap: '0.35rem' }}
                   >
-                    <span className="small">{refreshMsg}</span>
-                    <button className="btn btn-xs" onClick={() => setRefreshMsg(null)}>
-                      OK
-                    </button>
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <span className="small">
+                        <strong>[{refreshResult.status}]</strong> {refreshResult.text}
+                      </span>
+                      <button className="btn btn-xs" onClick={() => setRefreshResult(null)}>
+                        OK
+                      </button>
+                    </div>
+                    {refreshResult.providers && refreshResult.providers.length > 0 && (
+                      <div className="row" style={{ gap: '0.35rem', flexWrap: 'wrap' }}>
+                        {refreshResult.providers.map((pr) => (
+                          <span
+                            key={pr.provider}
+                            className={`badge ${pr.status === 'SUCCESS' ? 'badge-ok' : pr.status === 'FAILED' ? 'badge-danger' : 'badge-warn'}`}
+                            title={pr.summary}
+                          >
+                            {pr.provider}: {pr.status}{pr.cache_hit ? ' (cache)' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 
                 {/* Competitive Profile Scales (Distinct, never combined blindly) */}
                 <div className="cs2-kpi-grid">
                   <div className="cs2-kpi">
-                    <span className="small muted">Normalized (norm_v1)</span>
+                    <span className="small muted">Competitive Rank Strength</span>
                     <strong className="mono" style={{ color: 'var(--accent-amber)', fontSize: '1.25rem' }}>
-                      {profile.player.normalized_strength.toFixed(1)}
+                      {profile.player.normalized_strength != null ? profile.player.normalized_strength.toFixed(1) : 'Unavailable'}
                     </strong>
                     <span className="small muted">
                       {profile.player.strength_band} • Conf {Math.round(profile.player.confidence * 100)}%
                     </span>
                   </div>
                   <div className="cs2-kpi">
-                    <span className="small muted">Premier Rating</span>
+                    <span className="small muted">Premier CSR</span>
                     <strong className="mono">
                       {profile.player.premier_rating != null
                         ? profile.player.premier_rating.toLocaleString()
@@ -511,20 +561,53 @@ export const PlayerStatsView: React.FC<Props> = ({
                     <span className="small muted">{profile.player.premier_source || 'No source'}</span>
                   </div>
                   <div className="cs2-kpi">
-                    <span className="small muted">FACEIT ELO</span>
-                    <strong className="mono">
-                      {profile.player.faceit_elo != null ? profile.player.faceit_elo : 'Unavailable'}
-                    </strong>
-                    <span className="small muted">Separate scale</span>
-                  </div>
-                  <div className="cs2-kpi">
-                    <span className="small muted">Leetify / Manual</span>
+                    <span className="small muted">Leetify Rating</span>
                     <strong className="mono">
                       {profile.player.leetify_rating != null
                         ? `${profile.player.leetify_rating >= 0 ? '+' : ''}${profile.player.leetify_rating.toFixed(2)}`
-                        : `Manual ${profile.player.manual_rating}`}
+                        : 'Unavailable'}
                     </strong>
-                    <span className="small muted">Manual baseline: {profile.player.manual_rating}</span>
+                    <span className="small muted">Leetify Public v3</span>
+                  </div>
+                  <div className="cs2-kpi">
+                    <span className="small muted">FACEIT ELO &amp; Level</span>
+                    <strong className="mono">
+                      {profile.player.faceit_elo != null
+                        ? `${profile.player.faceit_elo}${profile.player.faceit_level ? ` (Lv ${profile.player.faceit_level})` : ''}`
+                        : 'Unavailable'}
+                    </strong>
+                    <span className="small muted">FACEIT scale</span>
+                  </div>
+                </div>
+
+                {/* Mechanical & Utility Summary Row */}
+                <div className="cs2-kpi-grid" style={{ marginTop: '0.6rem' }}>
+                  <div className="cs2-kpi">
+                    <span className="small muted">Aim Rating</span>
+                    <strong className="mono">
+                      {profile.player.aim_rating != null ? profile.player.aim_rating.toFixed(1) : 'Unavailable'}
+                    </strong>
+                    <span className="small muted">Leetify Mechanics</span>
+                  </div>
+                  <div className="cs2-kpi">
+                    <span className="small muted">Utility Rating</span>
+                    <strong className="mono">
+                      {profile.player.utility_rating != null ? profile.player.utility_rating.toFixed(1) : 'Unavailable'}
+                    </strong>
+                    <span className="small muted">Leetify Utility</span>
+                  </div>
+                  <div className="cs2-kpi">
+                    <span className="small muted">Pre-aim / Reaction</span>
+                    <strong className="mono">
+                      {profile.player.latest_stats?.preaim != null ? `${profile.player.latest_stats.preaim.toFixed(1)}°` : 'Unavailable'}
+                      {profile.player.latest_stats?.reaction_time_ms != null ? ` • ${Math.round(profile.player.latest_stats.reaction_time_ms)}ms` : ''}
+                    </strong>
+                    <span className="small muted">From available samples</span>
+                  </div>
+                  <div className="cs2-kpi">
+                    <span className="small muted">Data Coverage</span>
+                    <strong className="mono">{Math.round(profile.player.confidence * 100)}%</strong>
+                    <span className="small muted">{profile.player.data_status || profile.player.strength_band}</span>
                   </div>
                 </div>
               </div>

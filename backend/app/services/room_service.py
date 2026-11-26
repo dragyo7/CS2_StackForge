@@ -353,12 +353,22 @@ def _build_player_inputs(db: Session, room: MatchRoom) -> tuple[list[PlayerInput
                 "display_name": cp.display_name,
                 "steam_id64": p.steam_id64,
                 "identity_status": p.identity_status,
-                "manual_rating": cp.manual_rating,
+                "manual_rating": None,
                 "premier_rating": cp.premier_rating,
                 "faceit_elo": cp.faceit_elo,
+                "faceit_level": cp.faceit_level,
                 "leetify_rating": cp.leetify_rating,
+                "aim_rating": eff["aim_rating"],
+                "utility_rating": eff["utility_rating"],
+                "positioning_rating": eff["positioning_rating"],
+                "preaim": eff["preaim"],
+                "reaction_time_ms": eff["reaction_time_ms"],
+                "spotted_accuracy": eff["spotted_accuracy"],
+                "spray_accuracy": eff["spray_accuracy"],
+                "hs_pct": eff["hs_pct"],
                 "recent_form": cp.recent_form,
                 "primary_role": cp.primary_role,
+                "data_status": norm.data_status,
                 "normalized_strength": norm.normalized_strength,
                 "strength_band": norm.strength_band,
                 "confidence": norm.confidence,
@@ -369,6 +379,10 @@ def _build_player_inputs(db: Session, room: MatchRoom) -> tuple[list[PlayerInput
                 "kast": eff["kast"],
                 "opening_duel_pct": eff["opening_duel_pct"],
                 "trade_kills_per_match": eff["trade_kills_per_match"],
+                "traded_deaths_pct": eff["traded_deaths_pct"],
+                "utility_damage_per_round": eff["utility_damage_per_round"],
+                "flash_assists_per_round": eff["flash_assists_per_round"],
+                "enemies_flashed_per_round": eff["enemies_flashed_per_round"],
                 "clutch_win_pct": eff["clutch_win_pct"],
                 "consistency_score": eff["consistency_score"],
                 "win_rate": eff["win_rate"],
@@ -505,12 +519,35 @@ def _snapshot_to_normalized(snapshot: list[dict]) -> tuple[dict, dict[str, Playe
             display_name=item["display_name"],
             steam_id64=item.get("steam_id64"),
             identity_status=item.get("identity_status", "MANUAL_ONLY"),
-            manual_rating=item["manual_rating"],
+            manual_rating=None,
             premier_rating=item.get("premier_rating"),
             faceit_elo=item.get("faceit_elo"),
+            faceit_level=item.get("faceit_level"),
             leetify_rating=item.get("leetify_rating"),
+            aim_rating=item.get("aim_rating"),
+            utility_rating=item.get("utility_rating"),
+            positioning_rating=item.get("positioning_rating"),
+            preaim=item.get("preaim"),
+            reaction_time_ms=item.get("reaction_time_ms"),
+            spotted_accuracy=item.get("spotted_accuracy"),
+            spray_accuracy=item.get("spray_accuracy"),
+            hs_pct=item.get("hs_pct"),
             recent_form=item.get("recent_form"),
             primary_role=item.get("primary_role"),
+            adr=item.get("adr"),
+            kd_ratio=item.get("kd_ratio"),
+            kast=item.get("kast"),
+            opening_duel_pct=item.get("opening_duel_pct"),
+            trade_kills_per_match=item.get("trade_kills_per_match"),
+            traded_deaths_pct=item.get("traded_deaths_pct"),
+            utility_damage_per_round=item.get("utility_damage_per_round"),
+            flash_assists_per_round=item.get("flash_assists_per_round"),
+            enemies_flashed_per_round=item.get("enemies_flashed_per_round"),
+            clutch_win_pct=item.get("clutch_win_pct"),
+            consistency_score=item.get("consistency_score"),
+            win_rate=item.get("win_rate"),
+            stats_sample_size=item.get("stats_sample_size") or 0,
+            stats_stale=bool(item.get("stats_stale", False)),
         )
         inputs[pin.community_player_id] = pin
         normalized[pin.community_player_id] = normalize_player(pin)
@@ -780,7 +817,9 @@ def _format_discord_text(
 ) -> str:
     def fmt_player(p: dict) -> str:
         role = f" [{p['primary_role']}]" if p.get("primary_role") else ""
-        return f"- {p['display_name']}{role} (Str {p['normalized_strength']:.1f})"
+        s_val = p.get("normalized_strength")
+        s_str = f"Str {s_val:.1f}" if s_val is not None else "Insufficient Data"
+        return f"- {p['display_name']}{role} ({s_str})"
 
     lines = [
         f"**StackForge 5v5 — {room_title}** (Proposal #{proposal_number} • Finalized)",

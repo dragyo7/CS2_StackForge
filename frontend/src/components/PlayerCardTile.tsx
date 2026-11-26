@@ -88,7 +88,7 @@ export const PlayerCardTile: React.FC<Props> = ({
 
         <div style={{ textAlign: 'right' }}>
           <div className="mono" style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--accent-amber)' }}>
-            {player.normalized_strength.toFixed(1)}
+            {player.normalized_strength != null ? player.normalized_strength.toFixed(1) : '—'}
           </div>
           <div className="small muted">{player.strength_band}</div>
         </div>

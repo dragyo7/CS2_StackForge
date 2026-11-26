@@ -25,10 +25,17 @@ router = APIRouter(prefix="/api/players", tags=["players"])
 def list_players(
     q: str | None = Query(default=None),
     include_archived: bool = Query(default=False),
+    sort_by: str = Query(default="strength"),
     db: Session = Depends(get_db),
 ):
     comm = player_service.get_or_create_default_community(db)
-    return player_service.list_players(db, comm.id, query=q, include_archived=include_archived)
+    return player_service.list_players(db, comm.id, query=q, include_archived=include_archived, sort_by=sort_by)
+
+
+@router.get("/rankings", response_model=list[PlayerOut])
+def player_rankings(db: Session = Depends(get_db)):
+    comm = player_service.get_or_create_default_community(db)
+    return player_service.list_players(db, comm.id, sort_by="strength")
 
 
 @router.post("", response_model=PlayerOut, status_code=201)
@@ -63,10 +70,13 @@ def get_player_profile(player_id: str, db: Session = Depends(get_db)):
 
 @router.post("/{player_id}/refresh", response_model=RefreshProfileResponse)
 async def refresh_player_profile(
-    player_id: str, force: bool = Query(default=False), db: Session = Depends(get_db)
+    player_id: str,
+    force: bool = Query(default=False),
+    provider: str | None = Query(default=None),
+    db: Session = Depends(get_db),
 ):
     comm = player_service.get_or_create_default_community(db)
-    return await player_service.refresh_player_profile(db, comm.id, player_id, force=force)
+    return await player_service.refresh_player_profile(db, comm.id, player_id, force=force, provider=provider)
 
 
 @router.post("/{player_id}/stats", response_model=PlayerProfileOut, status_code=201)
