@@ -70,22 +70,72 @@ class CSWatchProvider:
             bans = data.get("bans") or {}
             vac = bool(bans.get("vac"))
             gb = int(bans.get("gameBans") or 0)
-            summary = f"CSWatch reputation {rep}/100 (risk: {risk}); bans: VAC={vac}, GameBans={gb}."
+            stored = data.get("stored")
+            stored_at = data.get("storedAt")
+            stale = bool(data.get("stale", False))
+            generated_at = data.get("generatedAt")
+            is_cheater = bool(data.get("isCheater", False))
+            conviction_count = int(data.get("convictionCount") or 0)
+
+            is_flagged = (
+                vac
+                or gb > 0
+                or conviction_count > 0
+                or is_cheater
+                or str(risk).lower() in ("high", "critical")
+            )
+            is_unknown = (stored is False) or (rep is None and str(risk).lower() == "unknown")
+
+            if is_flagged:
+                res_status = "FLAGGED"
+                freshness = "STALE" if stale else "FRESH"
+                summary = (
+                    f"CSWatch reputation {rep if rep is not None else '?'}/100 (risk: {risk}; "
+                    f"convictions={conviction_count}, isCheater={is_cheater}, VAC={vac}, GameBans={gb})."
+                )
+            elif is_unknown:
+                res_status = "UNKNOWN"
+                freshness = "UNKNOWN"
+                summary = (
+                    f"CSWatch profile unindexed or unknown for SteamID64 {steam_id64} "
+                    f"(stored={stored}); missing data is not a clean verdict."
+                )
+            elif stale:
+                res_status = "STALE"
+                freshness = "STALE"
+                summary = (
+                    f"CSWatch reputation {rep if rep is not None else '?'}/100 (risk: {risk}; "
+                    f"STALE cache storedAt={stored_at or 'unknown'} >24h — not a current clean verdict)."
+                )
+            else:
+                res_status = "OK"
+                freshness = "FRESH"
+                summary = f"CSWatch reputation {rep}/100 (risk: {risk}); bans: VAC={vac}, GameBans={gb}."
+
             return ProviderResult(
                 provider="cswatch",
-                status="FLAGGED" if (vac or gb > 0 or str(risk).lower() in ("high", "critical")) else "OK",
+                status=res_status,
+                endpoint_category="reputation",
+                player_identity=steam_id64,
+                freshness=freshness,
                 summary=summary,
                 data={
                     "persona_name": data.get("personaName"),
                     "avatar_url": data.get("avatarUrl"),
                     "reputation_score": rep,
                     "risk_level": risk,
+                    "stored": stored,
+                    "stored_at": stored_at,
+                    "stale": stale,
+                    "generated_at": generated_at,
                     "is_cheater": data.get("isCheater"),
-                    "conviction_count": data.get("convictionCount"),
+                    "conviction_count": conviction_count,
+                    "ai_severity": data.get("aiSeverity"),
                     "bans": bans,
                     "breakdown": data.get("breakdown") or [],
                     "factors": data.get("factors") or [],
                     "profile_url": data.get("cswatchProfileUrl") or f"https://cswatch.gg/player/{steam_id64}",
+                    "steam_profile_url": data.get("steamProfileUrl"),
                 },
             )
         except Exception:

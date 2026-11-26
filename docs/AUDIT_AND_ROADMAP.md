@@ -19,9 +19,9 @@ Verified against `backend/app/providers/`, `backend/app/services/`, and persiste
 | **URL / Identity Resolver & Alias History** | `backend/app/services/steam_parser.py`, `identity_resolver.py` | **ACTIVE** | Regex + vanity/summary canonicalization | SteamID64, Steam `/profiles/` & `/id/`, CSStats `/player/`, Leetify, CSWatch, FACEIT URLs -> `player_aliases` & `external_identities` |
 | **Freshness Coordinator & Background Scheduler** | `backend/app/services/refresh_coordinator.py`, `scheduler.py` | **ACTIVE** | Single-flight locks; `900s`/`1800s`/`3600s` TTLs; `86400s` stale sweep | Startup, login, and 24h background stale checks (disabled under `pytest`) |
 | **CSStats.gg** | `steam_parser.py`, `player_service.py` | **LINK-ONLY (NO SCRAPING)** | Cloudflare-gated | Extracts SteamID64 from URL and displays direct link only |
-| **Tracker Network (`tracker.gg`)** | N/A | **NOT IMPLEMENTED** | `0` code hits | Not used; no official public CS2 API integrated |
-| **FACEIT Analyser** | N/A | **NOT IMPLEMENTED** | `0` code hits | Not used |
-| **TrustFactor.gg** | N/A | **NOT IMPLEMENTED** | `0` code hits | Not used |
+| **Tracker Network (`tracker.gg`)** | N/A | **UNSUPPORTED / REJECTED** | Legacy CS:GO API deprecated; CS2 API approval-gated; scraping prohibited | See [CS2_ECOSYSTEM_RESEARCH.md](CS2_ECOSYSTEM_RESEARCH.md) |
+| **CSMeta / HLTV / BO3.gg / Mercurial.gg** | N/A | **UNSUPPORTED / REJECTED** | No self-serve public CS2 API / scraping prohibited | See [CS2_ECOSYSTEM_RESEARCH.md](CS2_ECOSYSTEM_RESEARCH.md) |
+| **Scope.gg / CSST.at / CStrike.gg / Suspect.gg / CS.Ninja** | N/A | **RESEARCH ONLY** | Closed or private APIs; conceptual UX/methodology references | See [CS2_ECOSYSTEM_RESEARCH.md](CS2_ECOSYSTEM_RESEARCH.md) |
 
 ---
 

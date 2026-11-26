@@ -40,6 +40,7 @@ Implemented and tested in `backend/` and `frontend/`:
 - `TESTING.md`: acceptance and test strategy.
 - `ROLLBACK.md`: rollback/migration/release plan.
 - `INTEGRATIONS.md`: external services, usage, access status and licensing checklist.
+- `CS2_ECOSYSTEM_RESEARCH.md`: comprehensive 21-source CS2 stats, trust/anti-cheat, official docs, and demo-parser comparison matrix & evidence governance rules.
 - `AUDIT_AND_ROADMAP.md`: verified end-to-end provider/metric audit, data lineage, discrepancy log, open-source CS2 ecosystem research, and prioritized roadmap.
 - `API.md`: complete REST API reference.
 - `DEMO_PIPELINE.md`: async CS2 `.dem` replay analysis pipeline design (`awpy` vs `demoparser2`).

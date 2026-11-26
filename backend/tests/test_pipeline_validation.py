@@ -445,3 +445,87 @@ def test_credential_vault_match_result_ops_and_scheduler(pipeline_client):
             assert health()["scheduler"] == "inactive"
 
     asyncio.run(_check_scheduler_singleton())
+
+
+@pytest.mark.anyio
+async def test_cswatch_preserves_stored_at_stale_convictions_and_unknown():
+    """Phase 4 CSWatch hardening: preserves storedAt/stale/convictionCount/isCheater and never fakes OK on missing/stale records."""
+    from app.providers.cswatch import CSWatchProvider
+
+    CSWatchProvider._request_timestamps.clear()
+    cw = CSWatchProvider(timeout=2.0)
+
+    def _cw_resp(body: dict):
+        req = httpx.Request("GET", "https://cswatch.gg/api/public/player/76561198000000001")
+        return httpx.Response(200, request=req, json=body)
+
+    with patch(
+        "httpx.AsyncClient.get",
+        new=AsyncMock(
+            return_value=_cw_resp(
+                {
+                    "steamId": "76561198000000001",
+                    "stored": False,
+                    "storedAt": None,
+                    "stale": False,
+                    "reputationScore": None,
+                    "riskLevel": "unknown",
+                    "isCheater": False,
+                    "convictionCount": 0,
+                    "bans": {"vac": False, "gameBans": 0},
+                }
+            )
+        ),
+    ):
+        res_unk = await cw.fetch_player("76561198000000001")
+    assert res_unk.status == "UNKNOWN"
+    assert res_unk.freshness == "UNKNOWN"
+    assert res_unk.data["stored"] is False
+
+    with patch(
+        "httpx.AsyncClient.get",
+        new=AsyncMock(
+            return_value=_cw_resp(
+                {
+                    "steamId": "76561198000000001",
+                    "stored": True,
+                    "storedAt": "2026-11-08T03:12:45.000Z",
+                    "stale": True,
+                    "generatedAt": "2026-11-26T10:00:00.000Z",
+                    "reputationScore": 88,
+                    "riskLevel": "low",
+                    "isCheater": False,
+                    "convictionCount": 0,
+                    "bans": {"vac": False, "gameBans": 0},
+                }
+            )
+        ),
+    ):
+        res_stale = await cw.fetch_player("76561198000000001")
+    assert res_stale.status == "STALE"
+    assert res_stale.freshness == "STALE"
+    assert res_stale.data["stored_at"] == "2026-11-08T03:12:45.000Z"
+    assert res_stale.data["stale"] is True
+
+    with patch(
+        "httpx.AsyncClient.get",
+        new=AsyncMock(
+            return_value=_cw_resp(
+                {
+                    "steamId": "76561198000000001",
+                    "stored": True,
+                    "storedAt": "2026-11-26T08:00:00.000Z",
+                    "stale": False,
+                    "reputationScore": 25,
+                    "riskLevel": "medium",
+                    "isCheater": True,
+                    "convictionCount": 2,
+                    "bans": {"vac": False, "gameBans": 0},
+                }
+            )
+        ),
+    ):
+        res_flag = await cw.fetch_player("76561198000000001")
+    assert res_flag.status == "FLAGGED"
+    assert res_flag.data["conviction_count"] == 2
+    assert res_flag.data["is_cheater"] is True

@@ -209,9 +209,9 @@ class TrustSignal(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     community_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     player_id: Mapped[str] = mapped_column(ForeignKey("players.id", ondelete="CASCADE"), nullable=False, index=True)
-    category: Mapped[str] = mapped_column(String(40), nullable=False)  # OFFICIAL_ENFORCEMENT | THIRD_PARTY_REPUTATION | BEHAVIORAL_ANOMALY | COMMUNITY_REPORT | HUMAN_REVIEW
+    category: Mapped[str] = mapped_column(String(40), nullable=False)  # OFFICIAL_ENFORCEMENT | THIRD_PARTY_REPUTATION | COMMUNITY_REPORT | DEMO_BEHAVIOURAL_SIGNAL | HUMAN_REVIEWED_EVIDENCE (or legacy HUMAN_REVIEW)
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), nullable=False)  # OK | FLAGGED | UNAVAILABLE | PENDING_REVIEW | DISMISSED
+    status: Mapped[str] = mapped_column(String(32), nullable=False)  # OK | FLAGGED | UNKNOWN | STALE | UNAVAILABLE | PENDING_REVIEW | DISMISSED
     summary: Mapped[str] = mapped_column(String(400), nullable=False)
     limitations: Mapped[str | None] = mapped_column(String(400), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
