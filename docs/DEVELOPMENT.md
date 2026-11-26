@@ -1,87 +1,90 @@
-# StackForge Development Guide, Rules & Testing
+# StackForge Development Guide, Dependencies & Testing
 
 ---
 
-## 1. Binding Product, Data & Trust Rules
+## 1. Supported Environment Baseline
 
-1. **Primary Match Workflow:** Optimize around selecting **10 unique players** cleanly (`0/10` -> `10/10` slots, no duplicate `player_id` or `steam_id64` in a room).
-2. **Strict Random-Map Policy:** Never add a map selector, map veto, or pre-match map prediction to Match Room creation, balancing, or team explanations.
-3. **Canonical Identity & Alias History:** Canonically key global players by string `SteamID64`; handle `/profiles/...`, `/id/...`, Leetify/CSWatch/FACEIT/CSStats URLs deterministically; log persona changes in append-only `player_aliases` rather than overwriting history or duplicating players.
-4. **Source-Qualified Statistics Only:** Store `provider`, `scope`, `sample_size`, `captured_at`, and `freshness`. Unknown or unavailable metrics remain `None` / `Unavailable` (`kast` on Leetify v3 is unavailable and must stay `None` unless supplied by a demo or manual log). Legacy `manual_rating` never enters balancing (`norm_v2`).
-5. **Separated Integrity Evidence Policy:**
-   - **Never accuse:** StackForge reports *facts and external sources* (`OFFICIAL_ENFORCEMENT`, `THIRD_PARTY_REPUTATION`, `COMMUNITY_REPORT`, `DEMO_BEHAVIOURAL_SIGNAL`, `HUMAN_REVIEWED_EVIDENCE`), never guilty verdicts.
-   - **Allowed language:** *"Public Steam record: 1 VAC ban recorded"* (with date/days), *"Public Steam record: 1 game ban recorded (app/game not specified)"*, *"CSWatch external reputation: High Risk (cswatch.gg) — third-party signal, not an official Valve verdict."*
-   - **Forbidden language:** *"Confirmed cheater"* (from game ban or stats alone), *"Banned from CS2"* (without game context), *"Valve Trust Factor"* (for third-party estimates).
-   - **No skill-to-cheat conflation:** High `ADR`, `HS%`, `aim_rating`, or fast `reaction_time_ms` never alter trust flags or trigger automatic watch entries; trust signals never alter skill ratings in team balancing.
-6. **CS2 Player Cards (`card_rules_v1`):**
-   - Positive/style titles require `sample_size >= 5`; negative roasts require `sample_size >= 8` or `>= 10`.
-   - Players with missing stats or `< 5` matches default safely to *Uncharted Operative* / *Balanced All-Rounder* with zero negative roasts.
-   - Humour stays strictly game-mechanics banter (utility, clutches, entries, saving) — never cheat insinuations — and supports per-player toggle (`humour_enabled`, `Mild`/`Spicy`/`Savage`, badge hiding, tagline reroll).
-
----
-
-## 2. Dependencies & Development Environment
-
-| Layer | Manifests | Verified Runtime Notes |
+| Layer | Manifests | Verified Baseline |
 |---|---|---|
-| **Backend Python** | `backend/requirements.txt` (runtime)<br>`backend/requirements-dev.txt` (test/dev)<br>`backend/pyproject.toml` | `requires-python = ">=3.11"` (project `.venv` runs `Python 3.13.5`; compatible with Python `3.12+`) |
-| **Frontend Node** | `frontend/package.json`<br>`frontend/package-lock.json` | Verified on `Node.js v24.11.1`; React `18.3.1`, TypeScript `5.6.3`, Vite `5.4.11`, `lucide-react` `0.460.0` |
-
-### Audited Direct Python Runtime Packages (`backend/requirements.txt`)
-Derived from static AST import scanning of `backend/app/` and runtime entrypoints (`uvicorn` launch + FastAPI multipart uploads + `.xlsx` spreadsheet import):
-- `fastapi` (web framework & OpenAPI)
-- `uvicorn[standard]` (ASGI server invoked by launcher & manual run)
-- `SQLAlchemy` (ORM & additive SQLite schema management)
-- `pydantic` (request/response validation)
-- `httpx` (async HTTP client for Steam, Leetify, FACEIT, CSWatch, Google Sheets)
-- `openpyxl` (`.xlsx` workbook parsing in `import_service.py`)
-- `python-multipart` (required at runtime by FastAPI `UploadFile` / `Form` endpoints in `routes/platform.py`)
-
-### Audited Test/Dev Addition (`backend/requirements-dev.txt`)
-- Includes `-r requirements.txt` plus `pytest` for automated verification (`backend/tests/`).
-
-Note: `backend/stackforge.db` and `backend/.venv` contain live local state and preinstalled packages; verify dependency changes in a **temporary clean virtual environment** rather than altering production state.
+| **Backend Python** | `backend/requirements.txt` (runtime)<br>`backend/requirements-dev.txt` (test/dev)<br>`backend/pyproject.toml` | **`Python 3.12.10`** documented baseline (`requires-python = ">=3.11"`; verified cleanly in isolated `Python 3.12.10` venv and active `Python 3.13.5` `.venv`) |
+| **Frontend Node** | `frontend/package.json`<br>`frontend/package-lock.json` | **`Node.js v24.11.1`** (`React 18.3.1`, `TypeScript 5.6.3`, `Vite 5.4.11`, `lucide-react 0.460.0`) |
 
 ---
 
-## 3. Canonical CS2 Metric Registry (`metric_registry.py`)
+## 2. Audited Python Dependencies (`backend/requirements*.txt`)
 
-`GET /api/metrics/registry` exposes the authoritative schema for all 24 tracked dimensions, ensuring unit parity between providers, SQLite storage, normalization, and UI cards:
-- **Ladder Scales:** `premier_rating`, `leetify_rating` (normalized across profile rank vs match decimal scales), `faceit_elo`, `faceit_level` (`1–10`).
-- **Mechanics & Aim (`[0, 100]` / units):** `aim_rating`, `utility_rating`, `positioning_rating`, `preaim` (`0–180°`), `reaction_time_ms` (`50–2500 ms`; converts Leetify match `reaction_time` seconds -> ms), `spotted_accuracy`, `spray_accuracy`, `hs_pct`.
-- **Combat & Teamplay:** `adr` (`0–300`), `kd_ratio` (`0–10`), `win_rate`, `opening_duel_pct`, `trade_kills_per_match`, `traded_deaths_pct` (blended with `positioning_rating` into `positioning_score`), `utility_damage_per_round`, `flash_assists_per_round` (calibrated to `[0.002, 0.080]`/rd), `enemies_flashed_per_round`, `clutch_win_pct`, `consistency_score` (`counter_strafing_good_shots_ratio`), `kast` (`None` on Leetify v3 until demo/manual data exists).
+Derived by AST scanning all non-stdlib imports across `backend/app/` and verifying runtime FastAPI/Uvicorn entrypoints:
 
-Out-of-range or corrupt upstream numbers are sanitized to `None` rather than clamping into plausible fake values or `0`.
+### `backend/requirements.txt` (Direct Runtime Dependencies Only)
+- `fastapi==0.165.0` — REST API framework & OpenAPI schemas
+- `httpx==0.28.1` — Async external provider HTTP client (`TestClient` test transport support)
+- `openpyxl==3.1.5` — `.xlsx` spreadsheet import parsing (`import_service.py`)
+- `pydantic==2.14.4` — Typed configuration and request/response validation
+- `python-multipart==0.0.34` — FastAPI multipart `UploadFile` / `Form` parsing (`routes/platform.py`)
+- `SQLAlchemy==2.1.9` — ORM models and additive SQLite schema management
+- `uvicorn[standard]==0.54.0` — ASGI runtime server used by the launcher and manual startup
+
+### `backend/requirements-dev.txt`
+- `-r requirements.txt` plus `pytest==9.2.0` (`anyio` plugin arrives transitively via FastAPI/HTTPX).
+
+### Scheduler Implementation Note
+- **`APScheduler` (or any external job scheduler library) is NOT used or required.** Periodic stale-player sweeps in `backend/app/services/scheduler.py` use Python standard-library `asyncio` tasks (`asyncio.Task`, `asyncio.sleep`, `asyncio.create_task`).
 
 ---
 
-## 4. Testing Strategy & Acceptance Checklist
+## 3. Manual Environment Setup & Run Commands
 
-### Implemented Test Suites (`backend/tests/`)
-- `test_providers.py` — Provider fail-safe defaults (`NOT_CONFIGURED` / `NOT_LINKED`) when credentials or IDs are absent.
-- `test_identity_and_cards.py` — Canonical SteamID64 deduplication, alias history preservation on Steam rename, cache retention on provider failure, additive SQLite migrations, and `card_rules_v1` sample thresholds.
-- `test_optimizer.py` — `norm_v2` scaling, missing-data unknown handling, 126-partition uniqueness, deterministic seed replay, hard constraints, and regeneration exhaustion.
-- `test_api_workflow.py` — Match-room end-to-end API flow: create room -> fill 10 -> preflight -> generate -> swap preview & swap -> lock/regenerate -> restore -> finalize -> share slug.
-- `test_onboarding_and_cs2_explanations.py` — Real-roster onboarding deduplication, CSWatch flag isolation, and CS2-native explanation grounding.
-- `test_platform_evolution.py` — Auth sessions, Google Sheet preview/commit/sync, watchlist flows, and multi-route platform checks.
-- `test_player_intelligence_v2.py` — Individual refresh scoping, `manual_rating` removal from matchmaking, DPAPI vault encryption behavior, and `Ops & Keys` telemetry.
-- `test_pipeline_validation.py` — End-to-end canonical metric lineage, `positioning_rating` + `traded_deaths_pct` wiring, post-match lifecycle (`RESULT_RECORDED`, `GET /api/standings/community`), scheduler active-state behavior, and CSWatch `UNKNOWN`/`STALE`/`FLAGGED` + conviction-freshness semantics.
-
-### Standard Pre-Commit Checks
+### Backend Setup & Server (`http://127.0.0.1:8001`)
 
 ```powershell
-# 1. Backend full test suite
 cd D:\CS2_StackForge\backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8001
+```
+
+### Frontend Setup & Dev Server (`http://127.0.0.1:5174/`)
+
+```powershell
+cd D:\CS2_StackForge\frontend
+npm install
+$env:VITE_API_TARGET = "http://127.0.0.1:8001"
+npm run dev -- --host 127.0.0.1 --port 5174 --strictPort
+```
+
+Verify dependency upgrades in a **disposable temporary virtualenv** rather than modifying `backend/.venv` or `backend/stackforge.db` directly.
+
+---
+
+## 4. Testing, Build Commands & Triage
+
+### Standard Verification Commands
+
+```powershell
+# 1. Dependency integrity check
+cd D:\CS2_StackForge\backend
+.\.venv\Scripts\python.exe -m pip check
+
+# 2. Backend automated test suite (isolated temp/in-memory DB fixtures)
 .\.venv\Scripts\python.exe -m pytest -v
 
-# 2. Frontend TypeScript typecheck + Vite production bundle
+# 3. Frontend TypeScript typecheck & Vite production build
 cd D:\CS2_StackForge\frontend
 npm run build
 ```
 
+> **Note:** When running ad-hoc `python -c "from app.main import app"` checks outside `backend/`, set `DATABASE_URL` to a temporary SQLite path so SQLAlchemy never initializes an unwanted `stackforge.db` in the working directory.
+
+### Implemented Backend Suites (`backend/tests/`)
+- `test_providers.py` — provider `NOT_CONFIGURED` / `NOT_LINKED` fail-safe checks.
+- `test_identity_and_cards.py` — `SteamID64` deduplication, append-only `PlayerAlias` lookup, cache retention on provider outage, additive `run_migrations()`, and `card_rules_v1` sample thresholds.
+- `test_optimizer.py` — `norm_v2` missing-unknown handling, 126 unique partitions, deterministic seed repeatability, hard constraints, and regeneration exhaustion.
+- `test_api_workflow.py` — full match-room flow (`create -> fill 10 -> preflight -> generate -> swap -> lock/regenerate -> restore -> finalize -> share`).
+- `test_onboarding_and_cs2_explanations.py` — duplicate prevention, CSWatch flag isolation, and CS2-native explanation checks.
+- `test_platform_evolution.py` — CSV/XLSX/Google Sheet import, identity resolver, separated watchlist reviews, and auth sessions.
+- `test_player_intelligence_v2.py` — individual refresh scoping, removal of `manual_rating` from team balancing, Leetify `429` backoff, and DPAPI/Ops telemetry.
+- `test_pipeline_validation.py` — canonical metric bounds, `positioning_rating` + `traded_deaths_pct` lineage, post-match results (`RESULT_RECORDED`, `/api/standings/community`), scheduler active-state behavior, and CSWatch `UNKNOWN`/`STALE`/`FLAGGED` + separate Steam vs conviction freshness semantics.
+
 ### Bug Triage Checklist
-When reporting or fixing a regression, record:
-1. **Reproduction steps** + affected endpoints/components
-2. **Expected vs actual behavior** (including SQLite/provider snapshot evidence)
-3. **Root cause** & **regression test** added in `backend/tests/`
-4. **Rollback / mitigation** check confirming no irreversible DB corruption.
+Record for every bug fix: (1) reproduction steps, (2) expected vs actual state/snapshots, (3) root cause & new regression test in `backend/tests/`, and (4) confirmation of safe migration/rollback behavior.

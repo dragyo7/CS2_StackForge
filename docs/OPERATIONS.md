@@ -1,57 +1,56 @@
-# StackForge Operations, Security & Rollback
+# StackForge Operations, Launcher, Backups & Troubleshooting
 
 ---
 
-## 1. Local Launcher & Process Safety (`Start-StackForge.ps1` / `.bat`)
+## 1. Local Windows Launcher (`Start-StackForge.ps1` / `.bat`)
 
 - **Default V2 Ports:** Backend `127.0.0.1:8001` (`uvicorn app.main:app`) · Frontend `127.0.0.1:5174` (`vite --strictPort`, `VITE_API_TARGET=http://127.0.0.1:8001`).
-- **PID Ownership & Isolation:** Managed child PIDs are recorded in gitignored `.stackforge-pids.json` (`managed: true`). Running `-Stop` terminates *only* verified launcher-managed `uvicorn`/`vite` processes; unrelated apps holding either port are reported and left untouched.
-- **Runtime Logs:** Written to gitignored `logs/backend.{out,err}.log` and `logs/frontend.{out,err}.log`.
+- **Process Ownership Safety:** Managed child PIDs are written to gitignored `.stackforge-pids.json` (`managed: true`). `-Stop` terminates *only* verified StackForge-owned `uvicorn`/`vite` processes; unrelated listeners on port `8001` or `5174` are reported and never killed.
+- **Flags:** `-Stop`, `-NoBrowser`, `-BackendPort <port>`, `-FrontendPort <port>`.
+- **Logs:** Written to gitignored `logs/backend.{out,err}.log` and `logs/frontend.{out,err}.log`.
 
 ---
 
-## 2. Configuration, Credentials & Security Hardening
+## 2. Deployment Secrets & Security Controls
 
-### Secret Management
-- Optional provider credentials (`STEAM_API_KEY`, `FACEIT_API_KEY`, `LEETIFY_API_KEY`) live either in gitignored `backend/.env` or encrypted server-side via **Windows DPAPI** (`CryptProtectData` in `backend/app/services/secrets_service.py` -> gitignored `.stackforge_secrets.dpapi.json`).
-- Secrets are **never** stored in `stackforge.db`, **never** echoed back to browser clients (only `configured: bool` and masked `****1234` hints via `GET /api/settings/credentials`), and **never** bundled into Vite frontend assets.
+### Server-Side Secret Vault
+- Optional API keys (`STEAM_API_KEY`, `FACEIT_API_KEY`, `LEETIFY_API_KEY`) live either in gitignored `backend/.env` or encrypted server-side via **Windows DPAPI** (`CryptProtectData` in `backend/app/services/secrets_service.py` -> gitignored `.stackforge_secrets.dpapi.json`).
+- Keys are never stored inside `backend/stackforge.db`, never logged or returned in plaintext (`GET /api/settings/credentials` exposes `configured: bool` and masked `****1234` hints only), and never bundled into `frontend/`.
 
-### Application Threat Controls
-- **Identity & Alias Spoofing:** Global deduplication locks to canonical string `SteamID64` and logs historical nicknames in append-only `player_aliases` so name changes cannot evade records or create duplicate entries.
-- **False Accusations & Harassment:** Integrity classes stay separated (`OFFICIAL_ENFORCEMENT` vs `THIRD_PARTY_REPUTATION` vs `COMMUNITY_REPORT` vs `HUMAN_REVIEWED_EVIDENCE`); missing/private profiles and unindexed CSWatch records stay `UNKNOWN`/`STALE`/`PRIVATE`, never converted into clean badges or cheat accusations.
-- **Tenant & Data Isolation:** Community notes, ratings, standings, and trust/watchlist records scope strictly by `community_id`.
-- **LLM Explanation Guard:** Match explanations are generated deterministically from optimizer snapshots; any optional prose formatter may only rephrase structured metrics without inventing numbers or accusations.
-- **Future Demo Upload Hardening (`P3`):** Enforce max size `<= 250 MB`, Source2 `.dem` header check, SHA-256 deduplication, filename sanitization, and isolated background `ProcessPoolExecutor(max_workers=1)` execution before enabling demo parsing.
+### Operational Security Controls
+- Community data (`notes`, ratings snapshot views, community standings, trust reports/watchlist) stays scoped by `community_id`.
+- `.env`, `*.dpapi.json`, `.stackforge-pids.json`, and `logs/` remain gitignored; temporary test DBs should stay in system temp directories via `DATABASE_URL`.
+- Future `.dem` uploads (`P3`, currently disabled) require `<= 250 MB` limit, Source2 header validation, SHA-256 deduplication, filename sanitization, and single-process background execution (`ProcessPoolExecutor(max_workers=1)`).
 
 ---
 
-## 3. Scheduler, Rate Limiting & `Ops & Keys` Telemetry
+## 3. Runtime Scheduler & `Ops & Keys` Telemetry
 
-- **Freshness Coordinator (`refresh_coordinator.py`):** Uses single-flight per-player/provider locks and TTL caching (`steam_profile`: `900s`, `steam_bans`: `900s`, `leetify`: `1800s`, `faceit`: `1800s`, `cswatch`: `3600s` with `25 req/min` sliding cap).
-- **Auto Scheduler (`scheduler.py`):** Triggered cleanly in FastAPI lifespan (automatically disabled when `PYTEST_CURRENT_TEST` is set), runs startup/periodic `86400s` stale sweeps, and reports live state via `GET /api/health` (`"scheduler": "active"` / `scheduler_detail`).
-- **Operational Visibility (`GET /api/ops/overview`):** Surfaces honest per-provider ingestion health (`HEALTHY`, `PARTIAL_COVERAGE`, `NOT_CONFIGURED`, `DEGRADED`), rate-limit/private counts, stale or insufficient-data players with one-click individual refresh, and DPAPI key status.
-
----
-
-## 4. Failure Modes & Recovery
-
-| Component | Failure Mode | Runtime Behavior & Recovery |
-|---|---|---|
-| **Steam Community / Web API** | Timeout, private profile, or unset `STEAM_API_KEY` | Preserves last known `steam_persona_name`/`avatar_url`; bans report `NOT_CONFIGURED` or `UNAVAILABLE`; Match Room continues without blocking. |
-| **Leetify Public API** | HTTP `429` or `privacy_mode: "private"` | Bounded `Retry-After <= 5s` (max 3 attempts); profile-only success when `/matches` fails saves `PARTIAL`; stats remain `None` rather than `0`. |
-| **FACEIT Data API v4** | Unset `FACEIT_API_KEY` or `401/403/429` | Reports `NOT_CONFIGURED` / `RATE_LIMITED` cleanly; falls back to Steam-linked FACEIT `elo`/`level` if returned by Leetify. |
-| **CSWatch Public API** | Unindexed (`stored=false`), `stale=true` (>24h Steam), or `>=25/min` cap | Maps explicitly to `UNKNOWN`, `STALE` (noting convictions remain `CURRENT` while Steam cache is `STALE`), or `RATE_LIMITED`. |
-| **Google Sheets / File Import** | Invalid URL/sheet permissions or unmatched row | Shows preview errors before commit; preserves existing player edits during idempotent re-sync. |
-| **SQLite Schema Evolution** | Startup after pull/update | `run_migrations()` (`backend/app/migrations.py`) applies idempotent additive `ALTER TABLE` / `CREATE TABLE IF NOT EXISTS` statements preserving legacy rows. |
+- **Freshness Coordinator (`refresh_coordinator.py`):** Per-player/provider single-flight locks and cache TTLs (`steam_profile`: `900s`, `steam_bans`: `900s`, `leetify`: `1800s`, `faceit`: `1800s`, `cswatch`: `3600s` with `25 req/min` sliding cap).
+- **In-Process Asyncio Scheduler (`scheduler.py`):** Uses Python standard-library `asyncio` (no external scheduler package), runs startup and periodic `86400s` stale sweeps, disables cleanly when `STACKFORGE_DISABLE_SCHEDULER=1` or `"pytest" in sys.modules`, and reports state via `GET /api/health`.
+- **`Ops & Keys` (`GET /api/ops/overview`):** Surfaces honest per-provider health (`HEALTHY`, `PARTIAL_COVERAGE`, `NOT_CONFIGURED`, `DEGRADED`), rate-limit/private counts, stale/insufficient players with one-click refresh, and DPAPI key status.
 
 ---
 
-## 5. Rollback & Release Safety Checklist
+## 4. Troubleshooting, Failure Recovery & SQLite Backups
 
-1. **Before risky DB changes:** Back up `backend/stackforge.db` (keep `.bak` copies out of git commits). Migrations must remain additive and backwards-compatible — never destructively drop legacy columns (`manual_rating` remains safely ignored in SQLite).
-2. **Code rollback:** Revert application code via `git` while keeping existing SQLite columns intact so older/reverted app versions read cleanly without schema breakage.
-3. **Secret hygiene before commit/release:** Verify `.env`, `*.dpapi.json`, `logs/`, `.stackforge-pids.json`, and scratch test DBs stay untracked in `.gitignore` and never appear in `git diff`.
-4. **Release gate:**
-   - Run `backend\.venv\Scripts\python.exe -m pytest -v` and confirm `0` failures.
-   - Run `npm run build` inside `frontend/` cleanly.
-   - Re-verify CSWatch `/developers` vs `/terms` status (`CLARIFICATION_REQUIRED` until explicit response from `support@cswatch.gg`), Steam `GetPlayerBans`, FACEIT Data API v4 limits, and attribution links before any public/shared hosting.
+| Issue / Failure | Runtime Behaviour & Troubleshooting Action |
+|---|---|
+| **Port `8001` or `5174` occupied** | Re-run with custom ports, e.g. `.\Start-StackForge.ps1 -BackendPort 8011 -FrontendPort 5184`. |
+| **Missing `.venv` or `node_modules`** | Recreate backend `.venv` on `Python 3.12.10` (`pip install -r backend\requirements-dev.txt`) or run `npm install` in `frontend/`. |
+| **Steam Community / Web API errors** | Preserves cached persona/avatar; missing `STEAM_API_KEY` reports `NOT_CONFIGURED` cleanly without blocking Match Room flows. |
+| **Leetify `429` or private profile** | Bounded `Retry-After <= 5s` (max 3 attempts); profile-only success when `/matches` fails stores `PARTIAL`; missing fields stay `None`. |
+| **FACEIT `NOT_CONFIGURED` / `429`** | Falls back safely without blocking; Steam-linked FACEIT ELO/level still ingests via Leetify when exposed. |
+| **CSWatch `UNKNOWN` / `STALE` / `>=25/min`** | Maps explicitly to `UNKNOWN`, `STALE` (preserving current convictions vs >24h Steam cache), or `RATE_LIMITED`. |
+| **SQLite backups & migrations** | Keep manual backups (`backend/stackforge.db.bak*`) outside git commits. Startup `run_migrations()` (`migrations.py`) executes idempotent additive `ALTER TABLE` / `CREATE TABLE IF NOT EXISTS` statements preserving legacy rows. |
+
+---
+
+## 5. Rollback & Release Checklist
+
+1. **Database safety:** Back up `backend/stackforge.db` before schema changes; keep migrations strictly additive (never drop legacy columns such as `manual_rating`).
+2. **Code rollback:** Revert application commits via `git` cleanly — additive SQLite schema remains backwards-compatible.
+3. **Release verification gate:**
+   - Run `pip check` and `pytest -v` in `backend/` (`0` failures).
+   - Run `npm run build` inside `frontend/`.
+   - Confirm secret hygiene (`git status`, `.gitignore`) and review [Integrations Compliance](INTEGRATIONS.md) before any shared/public hosting (CSWatch remains `CLARIFICATION_REQUIRED`).
