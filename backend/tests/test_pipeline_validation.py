@@ -506,6 +506,10 @@ async def test_cswatch_preserves_stored_at_stale_convictions_and_unknown():
     assert res_stale.freshness == "STALE"
     assert res_stale.data["stored_at"] == "2026-11-08T03:12:45.000Z"
     assert res_stale.data["stale"] is True
+    assert res_stale.data["steam_data_freshness"] == "STALE"
+    assert res_stale.data["convictions_freshness"] == "CURRENT"
+    assert res_stale.data["convictions_current"] is True
+    assert res_stale.data["permission_status"] == "CLARIFICATION_REQUIRED"
 
     with patch(
         "httpx.AsyncClient.get",
@@ -514,8 +518,8 @@ async def test_cswatch_preserves_stored_at_stale_convictions_and_unknown():
                 {
                     "steamId": "76561198000000001",
                     "stored": True,
-                    "storedAt": "2026-11-26T08:00:00.000Z",
-                    "stale": False,
+                    "storedAt": "2026-11-08T03:12:45.000Z",
+                    "stale": True,
                     "reputationScore": 25,
                     "riskLevel": "medium",
                     "isCheater": True,
@@ -529,3 +533,5 @@ async def test_cswatch_preserves_stored_at_stale_convictions_and_unknown():
     assert res_flag.status == "FLAGGED"
     assert res_flag.data["conviction_count"] == 2
     assert res_flag.data["is_cheater"] is True
+    assert res_flag.data["steam_data_freshness"] == "STALE"
+    assert res_flag.data["convictions_freshness"] == "CURRENT"

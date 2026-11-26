@@ -1,0 +1,9 @@
+# StackForge Backend Runtime Dependencies
+# Audited against backend/app imports and FastAPI/Uvicorn entrypoints (2026-11-26)
+fastapi==0.165.0
+httpx==0.28.1
+openpyxl==3.1.5
+pydantic==2.14.4
+python-multipart==0.0.34
+SQLAlchemy==2.1.9
+uvicorn[standard]==0.54.0

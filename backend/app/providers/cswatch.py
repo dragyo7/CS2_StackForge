@@ -89,9 +89,10 @@ class CSWatchProvider:
             if is_flagged:
                 res_status = "FLAGGED"
                 freshness = "STALE" if stale else "FRESH"
+                cache_note = f"convictions CURRENT; Steam/ban cache STALE storedAt={stored_at or 'unknown'}" if stale else "convictions & Steam cache CURRENT"
                 summary = (
                     f"CSWatch reputation {rep if rep is not None else '?'}/100 (risk: {risk}; "
-                    f"convictions={conviction_count}, isCheater={is_cheater}, VAC={vac}, GameBans={gb})."
+                    f"convictions={conviction_count}, isCheater={is_cheater}, VAC={vac}, GameBans={gb}; {cache_note})."
                 )
             elif is_unknown:
                 res_status = "UNKNOWN"
@@ -105,7 +106,7 @@ class CSWatchProvider:
                 freshness = "STALE"
                 summary = (
                     f"CSWatch reputation {rep if rep is not None else '?'}/100 (risk: {risk}; "
-                    f"STALE cache storedAt={stored_at or 'unknown'} >24h — not a current clean verdict)."
+                    f"convictions={conviction_count} [CURRENT], Steam/ban cache STALE storedAt={stored_at or 'unknown'} >24h — not a current clean verdict)."
                 )
             else:
                 res_status = "OK"
@@ -127,6 +128,10 @@ class CSWatchProvider:
                     "stored": stored,
                     "stored_at": stored_at,
                     "stale": stale,
+                    "steam_data_freshness": "UNKNOWN" if is_unknown else ("STALE" if stale else "CURRENT"),
+                    "convictions_freshness": "UNKNOWN" if is_unknown else "CURRENT",
+                    "convictions_current": not is_unknown,
+                    "permission_status": "CLARIFICATION_REQUIRED",
                     "generated_at": generated_at,
                     "is_cheater": data.get("isCheater"),
                     "conviction_count": conviction_count,

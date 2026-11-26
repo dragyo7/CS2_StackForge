@@ -1,154 +1,124 @@
-# External Integrations Registry
+# StackForge External Integrations & Ecosystem Compliance
 
-This is the source-of-truth inventory for third-party data, software and services. Update this file whenever an integration is added, removed or its terms/access change. For the full 21-source CS2 ecosystem evaluation, licensing, rate-limit matrix, and trust governance, see [CS2_ECOSYSTEM_RESEARCH.md](CS2_ECOSYSTEM_RESEARCH.md).
+This document is the single source of truth for external CS2 data providers, official documentation verification, rate limits, Terms of Service compliance, demo-parser candidates, and rejected/unsupported sources.
 
-## Integration Source Registry
+---
 
-| Provider | Classification | Official URL | API access | Key required | Available fields | Refresh policy | Attribution | Implementation status |
-|---|---|---|---|---|---|---|---|---|
-| **Google Sheets (CSV Export)** | Official (Read-only public link) | https://docs.google.com/spreadsheets/ | Public CSV export (`/export?format=csv`) | No (if link-readable) | Community spreadsheet columns (`Name`, `Url`, `IGN`, optional role/ratings; no manual skill ratings) | Manual Preview / Sync Now | Source URL stored in `spreadsheet_imports` | **Implemented & Working (Keyless)** |
-| **Steam Community XML (`?xml=1`)** | Public Official Feed | https://steamcommunity.com/ | Public `/id/{vanity}/?xml=1` & `/profiles/{sid}/?xml=1` | No | Persona name, avatar, visibility, vanity SteamID64 | Individual/Auto TTL (`900s`), single-flight | Link to `steamcommunity.com/profiles/{id}` | **Implemented & Working (Keyless)** |
-| **Steam Web API (`ISteamUser`)** | Official | https://partner.steamgames.com/doc/webapi/isteamuser | REST (`GetPlayerSummaries/v2`, `GetPlayerBans/v1`, `ResolveVanityURL/v1`) | Required (`STEAM_API_KEY`) for `GetPlayerBans` | Keyed persona/avatar + distinct VAC, generic Game Ban, Community, Economy bans | Individual/Auto TTL (`900s`), single-flight | Link to `steamcommunity.com/profiles/{id}` | **Requires Credentials** (`NOT_CONFIGURED` until key supplied) |
-| **Leetify Public CS API** | Third-party | https://api-public-docs.cs-prod.leetify.com/ | REST `/v3/profile`, `/v3/profile/matches`, `/api-key/validate` | Optional (`LEETIFY_API_KEY` for higher limits) | `ranks` (`premier`, `leetify`, `faceit`, `faceit_elo`), `rating` (`aim`, `utility`, `positioning`, `clutch`), `stats`, recent matches. `kast` unavailable. | Individual/Auto TTL (`1800s`), bounded 429 `Retry-After` (`PARTIAL` if matches fail) | Link to `leetify.com/app/profile/{id}` | **Implemented but Limited** (Keyless 429 limits, private profiles, no `kast`) |
-| **FACEIT Data API v4** | Official (Third-party platform) | https://developers.faceit.com/ | REST `/players`, `/players/{id}/stats/cs2` | Required (`FACEIT_API_KEY`, server-side Bearer) | FACEIT ID, nickname, ELO, skill level, CS2 lifetime matches/win%/KD/HS%/ADR | Manual/TTL cached (`1800s`) | Link to `faceit.com` profile | **Requires Credentials** (`NOT_CONFIGURED` fallback verified) |
-| **CSWatch Public JSON API** | Third-party | https://cswatch.gg/developers | REST `/api/public/player/{steamId}` | No on free tier (keyed tier available on request) | `personaName`, `avatarUrl`, `reputationScore`, `riskLevel`, `stored`, `storedAt`, `stale`, `isCheater`, `convictionCount`, `aiSeverity`, `bans`, `breakdown`, `factors` | On-demand/Refresh (25/min cap; free tier `<=30/min`, `<=500/day`) | **Required link to `cswatch.gg/player/{id}`**; not Valve verdict | **Implemented & Working (Keyless)** (Preserves `UNKNOWN` / `STALE` / `FLAGGED`) |
-| **CSStats.gg** | Website (No open public API) | https://csstats.gg/ | Cloudflare-gated; no documented open public REST API | N/A | Canonical `SteamID64` extracted from `/player/{steamid64}` URL only | N/A (no scraping) | Direct profile link only | **Implemented but Limited** (URL extraction & link only) |
-| **Scope.gg / CSST.at / CStrike.gg / Suspect.gg / CS.Ninja** | Third-party platforms | Various | Closed/private or non-self-serve (`CSST.at` invite-only) | Varies | Methodology / UX reference only | N/A | N/A | **Research Only** |
-| **Tracker.gg / CSMeta.gg / HLTV / BO3.gg / Mercurial.gg** | Unsupported / Prohibited scraping | Various | Deprecated/gated/no public API or scraping prohibited | N/A | Do not scrape or systematically ingest | N/A | N/A | **Unsupported / Not Recommended** |
+## 1. Read-Only Anti-Cheat & Legal Compliance Model
 
-## Read-Only Anti-Cheat Safety Model
-StackForge never injects into CS2, reads/writes game memory, modifies game files, simulates player input, automates Valve matchmaking queues, or scrapes Cloudflare-gated websites. All integrations are strictly read-only external HTTP requests or offline spreadsheet/demo inputs.
+StackForge strictly enforces read-only HTTP access and offline user-supplied files:
+- **Never** injects into CS2, reads/writes process memory, touches game binaries/VPKs, simulates input, or automates Valve matchmaking queues.
+- **Never** bypasses Cloudflare/anti-bot challenges or scrapes websites whose Terms of Service prohibit scraping or automated storage.
+- **Never** converts third-party reputation scores or statistical anomalies into Valve Trust Factor claims or cheating verdicts.
 
-## Status definitions
-- **Core planned:** expected in product, not necessarily implemented.
-- **Candidate:** evaluate license, maintenance, API and compatibility before adoption.
-- **Reference only:** learn from public product/methodology; do not scrape or ingest its data.
-- **Blocked:** requires provider approval/key/terms verification.
-- **Implemented:** only mark after code, tests and operational verification.
+---
 
-## Registry
+## 2. Active & Adapter-Ready Integrations Matrix
 
-### Valve / Steam
-- **Product:** Steam Web API.
-- **Endpoints:** `ISteamUser/ResolveVanityURL/v1`, `ISteamUser/GetPlayerSummaries/v2`, `ISteamUser/GetPlayerBans/v1`.
-- **Use:** Resolve vanity URLs to canonical SteamID64; refresh public persona name/avatar and record alias changes in `player_aliases`; check VAC/game/community/economy ban response.
-- **Auth:** Server-side `STEAM_API_KEY` env var (`ISteamUser/*`); falls back cleanly to public `https://steamcommunity.com/id/{vanity}/?xml=1` and `/profiles/{sid}/?xml=1` when keyless. Steam OpenID identity login remains deferred.
-- **Limits/caveats:** Public profile fields only; API access and key terms apply. `GetPlayerBans` returns ban counts/status and may include app-related details; never infer CS2 cheating from a generic count alone. Steam's CS2 game-ban policy includes cheating, matchmaking rank manipulation, botting/automation and interference with game systems.
-- **Docs:** https://partner.steamgames.com/doc/webapi/ISteamUser
-- **Policy:** https://help.steampowered.com/en/faqs/view/4E54-0B96-D0A4-1557
-- **Status:** Adapter implemented (`backend/app/providers/steam.py`); `?xml=1` profile/vanity resolution is active and live-tested keyless, while official `GetPlayerBans` stays `NOT_CONFIGURED` until `STEAM_API_KEY` is provided.
+| Provider / Source | Auth / Key | Official Docs / URL | Implementation Status | Cache TTL / Rate Controls | Primary Caveats & Compliance |
+|---|---|---|---|---|---|
+| **Steam Community XML (`?xml=1`)** | None (Keyless) | https://steamcommunity.com/ | **Implemented & Active** (`providers/steam.py`) | `900s` TTL + single-flight | Public profile fields only (`steamID64`, persona, avatar, visibility). Fails gracefully to cached identity on outage. |
+| **Steam Web API (`ISteamUser`)** | `STEAM_API_KEY` (server-side) | https://partner.steamgames.com/doc/webapi/ISteamUser | **Implemented** (`NOT_CONFIGURED` until key set) | `900s` TTL | Unlocks official `GetPlayerBans/v1`, `GetPlayerSummaries/v2`, `ResolveVanityURL/v1`. Game-ban counts include non-CS2/non-cheat enforcement. |
+| **Leetify Public CS API v3** | Optional `LEETIFY_API_KEY` | https://api-public-docs.cs-prod.leetify.com/ | **Implemented & Active** (`providers/external.py`) | `1800s` TTL; max 3 retries (`Retry-After <= 5s`) | Keyless mode hits stricter HTTP `429 RATE_LIMITED`; private profiles return explicit `PRIVATE`; `kast` absent on public v3 (`None`). |
+| **FACEIT Data API v4** | `FACEIT_API_KEY` (server Bearer) | https://docs.faceit.com/docs/data-api/ | **Implemented** (`NOT_CONFIGURED` until key set) | `1800s` TTL | Lifetime CS2 stats & ELO/level when keyed (handles `400/401/403/404/429`). Without key, Steam-linked FACEIT `elo`/`level` still reads from Leetify when exposed. |
+| **CSWatch Public JSON API** | None on free tier (keyed tier via support) | https://cswatch.gg/developers<br>https://cswatch.gg/terms | **Implemented Keyless — `CLARIFICATION_REQUIRED`** (`providers/cswatch.py`) | **25 req/min local cap** (`<= 30/min`, `<= 500/day` fair use); `3600s` TTL | `/developers` allows JSON API + embeds with link attribution; `/terms` §4 restricts non-personal redistribution. See Section 4. |
+| **Google Sheets CSV / `.csv` / `.xlsx`** | Public share link or local file upload | https://docs.google.com/spreadsheets/ | **Implemented & Active** (`import_service.py`) | Manual Preview / Commit / Sync Now | Extracts canonical URLs/IDs cleanly; ignores manual ratings in balancing. |
+| **CSStats.gg** | N/A (No open REST API) | https://csstats.gg/ | **URL Parse & Link-Out Only** (`steam_parser.py`) | No HTTP requests made | Cloudflare-gated; extracts `SteamID64` from `/player/{steamid64}` URLs only; never scraped. |
 
-### FACEIT
-- **Product:** FACEIT Data API v4.
-- **Endpoints:** `GET /players?game=cs2&game_player_id={steamid64}`, `GET /players/{player_id}/stats/cs2`.
-- **Use:** Fetch ELO/level plus lifetime CS2 combat stats (`Matches`, `Win Rate %`, `Average K/D Ratio`, `Average Headshots %`, `ADR`) stored in `player_stat_snapshots`.
-- **Auth:** Server-side `FACEIT_API_KEY` env var.
-- **Limits/caveats:** Publicly available data only, API rate limits and HTTP 401/403/404/429/503 handling. Verify developer terms before public/commercial launch.
-- **Docs:** https://docs.faceit.com/docs/data-api/
-- **Player docs:** https://docs.faceit.com/docs/data-api/data/
-- **Status:** Adapter implemented (`backend/app/providers/external.py`) with `NOT_CONFIGURED`/`UNAVAILABLE` fallback; live API calls untested pending `FACEIT_API_KEY` (Steam-linked FACEIT level/ELO still arrives via Leetify `ranks` when exposed).
+---
 
-### Leetify
-- **Product:** Leetify Public CS API v3.
-- **Endpoints:** `GET /v3/profile?steam64_id={steam64_id}` and `GET /v3/profile/matches?steam64_id={steam64_id}`.
-- **Use:** Fetch Leetify rating, Premier CSR, FACEIT ELO/level (when linked), sub-ratings (`aim`, `utility`, `positioning`, `clutch`), mechanics (`preaim`, `reaction_time_ms`, `accuracy_enemy_spotted`, `spray_accuracy`, `counter_strafing_good_shots_ratio`), opening duels, trades, utility dmg, flash stats, recent-10/30 aggregates, recent match history (`<=15`), and private per-map deltas (`PARTIAL` if profile succeeds while matches fail).
-- **Auth:** Optional server-side `LEETIFY_API_KEY` env var (`_leetify_key` header); works keyless in read-only mode with 3-attempt `Retry-After`/exponential backoff on HTTP 429.
-- **Limits/caveats:** Keyless mode incurs stricter throttling (`429 RATE_LIMITED`). `kast` is not returned on public v3 endpoints and remains `Unavailable`. Follow developer guidelines and attribution; do not scrape private data.
-- **Docs:** https://api-public-docs.cs-prod.leetify.com/
-- **Developer guidelines:** https://leetify.com/app/developer (check current in-product terms)
-- **Status:** Implemented & Live-Tested (`backend/app/providers/external.py`).
+## 3. Official API Verification Details (Checked 2026-11-26)
 
-### Premier rating / history sources
-- **Valve public API:** No dependable supported public endpoint for complete Premier rating/history is assumed by this project.
-- **Leetify:** Use Premier fields only if returned for the player and source/period are clear.
-- **Third-party trackers:** Evaluate only if they provide a documented, authorized API and terms permitting display/storage.
-- **Local CS2 Game State Integration:** Optional companion can capture local opted-in user's future game-state events; does not backfill all players or provide global Premier history.
-- **Reference project:** https://github.com/pkia/cs2-tracker
-- **Status:** Provider evaluation; no scraping.
+### Steam `ISteamUser/GetPlayerBans/v1/` & Anti-Cheat Policy
+- Official Steamworks documentation confirms `GetPlayerBans/v1` returns per-account fields: `CommunityBanned` (`bool`), `VACBanned` (`bool`), `NumberOfVACBans` (`uint32`), `DaysSinceLastBan` (`int`), `NumberOfGameBans` (`uint32` — Overwatch/developer/publisher game bans), and `EconomyBan` (`string`, e.g., `"none"`, `"probation"`, `"banned"`).
+- **Governance impact:** StackForge keeps VAC, generic game ban, community ban, and economy/trade ban fields distinct inside `OFFICIAL_ENFORCEMENT` and forbids labeling a generic `NumberOfGameBans` count as CS2 cheating without game/context proof. Valve exposes enforcement outcomes via `GetPlayerBans` — not Trust Factor internals.
 
-### CSWatch
-- **Product:** CSWatch public JSON API and embeds.
-- **Use:** Separated third-party reputation/risk signal (`THIRD_PARTY_REPUTATION`) with source attribution and direct profile link; stored with observation timestamp independently of Steam enforcement.
-- **API:** https://www.cswatch.gg/developers
-- **Endpoint documented:** `GET https://cswatch.gg/api/public/player/{steamId}`
-- **Documented schema fields preserved:** `reputationScore`, `riskLevel`, `stored`, `storedAt`, `stale`, `generatedAt`, `isCheater`, `convictionCount`, `aiSeverity`, `bans`, `breakdown`, `factors`, `cswatchProfileUrl`, `steamProfileUrl`.
-- **Missing / stale safety rule:** `stored=false` or `reputationScore=None` with `riskLevel="unknown"` produces `status="UNKNOWN"` (`freshness="UNKNOWN"`); `stale=true` (>24h upstream Steam cache) produces `status="STALE"` unless flagged (`vac`/`gameBans`/`convictionCount>0`/`isCheater`/`high|critical`), **never** converting stale or missing data into a clean verdict.
-- **Published fair-use statement:** up to 30 player requests/minute and 500 requests/day per IP (StackForge enforces a 25/min sliding window cap); **visible link attribution to `cswatch.gg` required**. Keyed API available on request.
-- **Caveats:** Third-party reputation, not Valve enforcement or Trust Factor. Review methodology and privacy/terms before commercial launch.
-- **Status:** Implemented & Hardened ([cswatch.py](file:///d:/CS2_StackForge/backend/app/providers/cswatch.py)).
+### FACEIT Data API v4
+- Official docs (`docs.faceit.com`, `developers.faceit.com`) confirm `Authorization: Bearer <api_key>` authentication, strict distinction between server-side API keys (never embedded in client JS) and client-side keys, player/stats/ban/history endpoints (`/data/v4/players`, `/players/{id}/stats/{game_id}`, `/players/{id}/bans`, `/players/{id}/history`), and HTTP status handling (`400`, `401`, `403`, `404`, `429`).
+- StackForge's `FaceitProvider` keeps `FACEIT_API_KEY` strictly on the FastAPI server (`secrets_service.py` / `backend/.env`) and preserves `NOT_CONFIGURED` cleanly when unset.
 
-### CS2SUS
-- **Product:** Website for CS2 stats and demo-derived suspiciousness signals.
-- **Use:** Research reference for combined Steam/FACEIT/Leetify data and demo-analysis methodology.
-- **Website:** https://cs2sus.com/
-- **Caveats:** Its FAQ says the score is an anomaly measure, not proof of cheating; no documented public API was confirmed in this review. Do not scrape or ingest scores without permission.
-- **Status:** Reference only.
+### Leetify Public CS API v3
+- Official schema covers `GET /v3/profile?steam64_id={id}`, `GET /v3/profile/matches?steam64_id={id}`, `GET /v2/matches/{gameId}`, and `GET /api-key/validate`.
+- Keyless access works with dynamic HTTP `429` limits; optional `LEETIFY_API_KEY` (`_leetify_key` / Bearer) raises quota limits. Metric unit normalization converts match `reaction_time` seconds to milliseconds (`reaction_time_ms`), validates bounds, and treats absent `kast` as `None` (`Unavailable`).
 
-### Cheatscanner.eu
-- **Product:** CS2 demo evidence analysis website.
-- **Use:** Research reference for evidence-oriented demo analysis and signal explanations.
-- **Website:** https://cheatscanner.eu/
-- **Caveats:** No public integration API/redistribution permission confirmed. Do not scrape. Prefer our own user-submitted demos and open-source parser.
-- **Status:** Reference only.
+---
 
-### CS2Track
-- **Product:** CS2 stats tracker and cheater watchlist.
-- **Use:** UX reference for watchlists, ban change monitoring and multi-source player profiles.
-- **Website:** https://cs2track.com/
-- **Caveats:** No authorized public API contract confirmed during this review.
-- **Status:** Reference only.
+## 4. CSWatch Investigation: `/developers` vs `/terms` Discrepancy
 
-### VACWatch
-- **Product:** Steam ban monitoring reference.
-- **Website:** https://vac.watch/
-- **Use:** Study watchlist/ban-history UX.
-- **Caveats:** Verify current API access and terms before any integration.
-- **Status:** Reference only.
+> **Current Permission Status:** **`CLARIFICATION_REQUIRED`**  
+> **Operator Details (from live `cswatch.gg/terms`):** *CSWatch*, Dutch KvK `82826757`, Pisuissestraat 12, 3034 WK Rotterdam, Netherlands · Legal/API Contact: `support@cswatch.gg`
 
-### CS.Ninja
-- **Product:** Player trust/stat checker.
-- **Website:** https://cs.ninja/
-- **Use:** UI/reference for multi-signal trust explanation.
-- **Caveats:** A third-party trust estimate is not Valve Trust Factor.
-- **Status:** Reference only.
+### Verified Live Findings (Retrieved 2026-11-26)
+1. **`https://cswatch.gg/developers` (`HTTP 200`):**
+   - Explicitly publishes free unauthenticated `GET https://cswatch.gg/api/public/player/{steamId}`, HTML embed `<iframe>`, and `GET /api/public/leaderboard?limit=50`.
+   - States fair use: **up to 30 player requests per minute and 500 per day per IP**.
+   - States attribution & commercial note: *"Please attribute with a visible link to cswatch.gg so users can dig deeper into the evidence. Commercial use is fine. Need more than 500 players a day, or live data? Email support@cswatch.gg about a keyed API."*
+   - Explicitly documents freshness semantics: `storedAt` indicates when Steam data was fetched; `stale: true` means Steam fetch is >24 hours old (so VAC/Game bans may be newer), **while `"Convictions are always current."`** When `stored: false`, `riskLevel` is `"unknown"` and the player is queued for nightly refresh.
+2. **`https://cswatch.gg/terms` (`HTTP 200`, Last updated `28 October 2026`):**
+   - Section 4 (**Acceptable use**) states: *"You agree not to: **Scrape, mirror, or redistribute data beyond your personal lookup use.** ... Attempt to bypass rate limits, credit requirements, or the anti-abuse system."*
+   - Section 2 confirms CSWatch aggregates public Steam, FACEIT, and Leetify data plus community reports, is not affiliated with Valve/FACEIT/Leetify, does not issue bans, and does not claim a low reputation score proves cheating.
 
-### Awpy
-- **Repository:** https://github.com/pnxenopoulos/awpy
-- **Docs:** https://awpy.readthedocs.io/en/latest/
-- **Use:** Parse CS2 `.dem` files; rounds, kills, damages, shots, player state, stats, line of sight/navigation where supported.
-- **License:** MIT per repository; retain license/notice.
-- **Requirements noted in docs:** Python 3.11+, Polars 2.x; verify pinned release compatibility at implementation time.
-- **Caveats:** Demo parsing is asynchronous; map assets extracted from game files have separate Valve IP/licensing considerations.
-- **Status:** Preferred parser candidate.
+### Discrepancy & StackForge Mitigation
+- **Why clarification is required:** `/developers` explicitly invites third-party apps/sites (including commercial apps) to embed/consume `/api/public/player/{steamId}` with attribution, whereas general website `/terms` §4 restricts redistributing data *"beyond your personal lookup use"* — creating legal ambiguity for a hosted/multi-user community dashboard that caches/displays CSWatch responses for other community members.
+- **How StackForge enforces safety right now:**
+  1. Keeps `permission_status = "CLARIFICATION_REQUIRED"` in documentation and CSWatch provider metadata (`providers/cswatch.py`).
+  2. Enforces a conservative **25 requests/minute** client sliding cap (safely under 30/min) plus a `3600s` snapshot TTL.
+  3. Preserves field-level freshness separately (`steam_data_freshness: STALE|CURRENT|UNKNOWN` vs `convictions_freshness: CURRENT` when indexed) and keeps `UNKNOWN` / `STALE` / `FLAGGED` / `OK` distinct so stale Steam cache never masquerades as a fresh clean verdict.
+  4. Stores and surfaces the direct `cswatch.gg/player/{steamId}` attribution link and *"NOT an official Valve verdict"* disclaimer on every signal.
 
-### demoparser2
-- **Repository:** https://github.com/LaihoE/demoparser
-- **Use:** Alternative Rust-backed CS2 demo parser with Python/JavaScript integration.
-- **License:** Verify current repository LICENSE before adding; pin version and preserve notices.
-- **Status:** Alternative candidate.
+### Draft Clarification Email to `support@cswatch.gg` (Not Sent)
 
-### Discord
-- **Docs:** https://discord.com/developers/docs
-- **Use:** Later slash commands, room links, approvals and notifications.
-- **Caveats:** OAuth scopes, bot permissions, rate limits and Discord policy.
-- **Status:** Later release.
+> **To:** `support@cswatch.gg`  
+> **Subject:** Clarification on `/api/public/player/{steamId}` vs Terms §4 for Private CS2 Community Organizer (StackForge)  
+>
+> Hello CSWatch team,  
+>  
+> We are building **StackForge**, a small non-public Counter-Strike 2 private 5v5 match organizer for a local friend/community stack (`D:\CS2_StackForge`). We would like to clarify the relationship between your developer documentation (`https://cswatch.gg/developers`) and your general Terms of Service §4 (`https://cswatch.gg/terms`, updated 28 October 2026) before relying on CSWatch outside private personal testing:  
+>  
+> 1. Under `/developers`, `GET /api/public/player/{steamId}` is offered for third-party integrations (with visible attribution links back to `cswatch.gg` and commercial use noted as permitted up to 30 req/min and 500 req/day per IP), whereas Terms §4 prohibits redistributing data *"beyond your personal lookup use."* Does `/developers` supersede §4 when calling the documented JSON endpoint cleanly under fair-use limits and displaying attributed CSWatch status/links inside a private community lobby view?  
+> 2. Does StackForge's server-side response snapshot caching (TTL 60 minutes, storing observation history alongside `storedAt`, `stale`, and `cswatchProfileUrl`) align with your acceptable caching/retention expectations?  
+> 3. If this use requires a keyed API agreement or tighter TTL/display rules, what tier or terms apply?  
+>  
+> For clarity, StackForge never scrapes web pages, enforces a 25 req/min local cap, links directly to `https://cswatch.gg/player/{steamId}`, preserves `stale`/`unknown` semantics, and explicitly disclaims that CSWatch signals are third-party reputation indicators rather than official Valve enforcement verdicts.  
+>  
+> Thank you for your time and guidance.  
 
-### Official API Key Acquisition & Keyless Operation
-- **Keyless mode works out of the box** via Steam Community XML (`?xml=1`), Leetify Public CS API v3, CSWatch Public API, Google Sheets CSV, and host-recorded match outcomes.
-- Optional keys (`STEAM_API_KEY`, `FACEIT_API_KEY`, `LEETIFY_API_KEY`) can be entered in the **Ops & Keys** tab (`PUT /api/settings/credentials/{provider}`) where they are encrypted server-side via **Windows DPAPI** (`CryptProtectData`, stored outside SQLite and never returned to the browser) or placed in `backend/.env`:
-  - **Steam Web API (`STEAM_API_KEY`):** Obtain via `https://steamcommunity.com/dev/apikey` (required only for official `GetPlayerBans` & keyed `GetPlayerSummaries`).
-  - **FACEIT Data API (`FACEIT_API_KEY`):** Create an app & server-side API key at `https://developers.faceit.com/`.
-  - **Leetify Developer Key (`LEETIFY_API_KEY`):** Create an optional developer key at `https://leetify.com/app/developer` for higher throughput.
+---
 
-## Integration acceptance checklist
-Before implementation:
-- [ ] Current docs read.
-- [ ] API key/access confirmed.
-- [ ] Terms and commercial use checked.
-- [ ] Rate limits recorded.
-- [ ] Privacy/visibility behaviour tested.
-- [ ] Data fields and provenance mapped.
-- [ ] Error responses and retry rules implemented.
-- [ ] Attribution requirements met.
-- [ ] No scraping unless explicitly permitted.
-- [ ] Provider adapter tests and fixture snapshots added.
+## 5. Candidate CS2 Demo Parsers (Deferred `P3` Research)
+
+Verified directly against official documentation before any implementation decision:
+
+| Parser | License | Python / OS Support | Strengths & Fit for StackForge | Decision |
+|---|---|---|---|---|
+| **[Awpy](https://awpy.readthedocs.io/en/latest/)** (`pnxenopoulos/awpy`) | **MIT** | Python `>= 3.11` (`3.11–3.15`); precompiled Windows wheels (no Rust toolchain needed); Polars `2.x` + `pbdems2` | Built-in CS2 `.dem` (`PBDEMS2`) round reconstruction plus `awpy.stats.adr`, `kast`, and `calculate_trades(demo, trade_length_in_seconds=5.0)`. Cleanest match for Python 3.13 + FastAPI async worker. | **Preferred P3 Parser Candidate** |
+| **[demoparser2](https://github.com/LaihoE/demoparser)** (`LaihoE/demoparser`) | **MIT** | Rust core with Python (`>= 3.8`, `pip install demoparser2`), JS (`@laihoe/demoparser2`), and WASM | High-throughput query-based CS2 `.dem` tick/property/event extraction when custom low-level analytics are required. | **Alternative Candidate** |
+
+---
+
+## 6. External Ecosystem — Evaluated Sources
+
+| Source | Category | API / Terms Finding | Decision | Rationale |
+|---|---|---|---|---|
+| **Valve / Steam (`ISteamUser`)** | Official Identity & Bans | Public `?xml=1` + keyed `ISteamUser` Web API | **Implemented** | Canonical `SteamID64`, alias history, official `GetPlayerBans` enforcement tracks. |
+| **Leetify Public CS API v3** | CS2 Stats & Match History | Official `/v3/profile*` API (key optional) | **Implemented** | Core source for aim, utility, positioning, preaim, reaction time, openings, trades, form. |
+| **FACEIT Data API v4** | Competitive Ladder & Lifetime Stats | Official Bearer API at `open.faceit.com/data/v4` | **Implemented (Keyed)** | Authoritative FACEIT ELO/level & CS2 lifetime combat stats once key is added. |
+| **CSWatch Public API** | Third-Party Reputation | Public JSON API (`<=30/min`, `<=500/day`); ToS §4 ambiguity | **Implemented (`CLARIFICATION_REQUIRED`)** | Attributed non-verdict signal only; 25/min cap; preserves `stale` Steam vs current convictions. |
+| **CSStats.gg** | Match History Website | Cloudflare-gated; no open public API | **Link-Out & ID Parse Only** | Respect Cloudflare/TOS; extract `SteamID64` from `/player/{id}` and link out cleanly. |
+| **Tracker Network (`tracker.gg`)** | Multi-Game Stats | Legacy CS:GO API deprecated; CS2 API approval-gated; scraping prohibited | **Unsupported / Rejected** | Cannot scrape; Leetify + FACEIT already supply richer CS2 metrics cleanly. |
+| **HLTV / BO3.gg** | Pro Esports Databases | Closed/Cloudflare-gated or commercial pro feeds | **Rejected** | Private community players are not esports pros; scraping prohibited. |
+| **CSMeta.gg / Mercurial.gg** | Aggregators / Demo AI | No open self-serve API; Mercurial TOS prohibits scraping/storage | **Rejected** | TOS incompatibility and downstream aggregation redundancy. |
+| **Scope.gg / CSST.at** | Coaching / Private Aggregator | Scope consumer-only; CSST.at invite-only Bearer API | **Research Only** | Feature/UX reference without adding upstream chaining risk. |
+| **CS2SUS / Cheatscanner / CStrike.gg Trust / Suspect.gg / CS2Track / VACWatch / CS.Ninja** | Trust & Demo Screening References | Closed/reference sites or non-public APIs (`CS2SUS` confirms anomaly != cheat) | **Research Only** | Useful for non-accusatory evidence UX and review workflows; never scrape. |
+| **`akiver/cs-demo-manager` / `CSManager` / `demo-anticheat`** | Open-Source CS2 Projects | MIT Electron+Go (`cs-demo-manager`), MIT Next/Supabase (`CSManager`), Go CLI (`demo-anticheat`) | **Research Only** | Inspiration for KAST formulas, yearly community standings, and `.dem` heuristic limits. |
+| **CS2 Local Game State Integration (`cs2-tracker`)** | Local Client Telemetry | Opt-in local localhost HTTP events during live client play | **Future Optional Companion** | Only observes the local opted-in player's active match; cannot backfill a 10-player stack. |
+
+---
+
+## 7. New Integration Acceptance Checklist
+
+Before enabling any new provider or parser in runtime:
+1. Read current official docs, auth rules, commercial/redistribution Terms, and rate limits.
+2. Confirm attribution requirements, missing/private behavior, and non-accusatory wording.
+3. Implement behind a bounded adapter in `backend/app/providers/` with `ProviderSnapshot` status normalization.
+4. Add unit/mock contract tests in `backend/tests/` before UI exposure.
